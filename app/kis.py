@@ -51,7 +51,8 @@ def load_env() -> dict:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
+                v = v.split(" #", 1)[0].split("\t#", 1)[0].strip().strip('"').strip("'")  # 줄 끝 주석 제거
+                env[k.strip()] = v
     for k in ("KIS_MODE", "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT", "KIS_PHONE"):
         if os.environ.get(k):
             env[k] = os.environ[k]
