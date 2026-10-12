@@ -114,18 +114,24 @@ class KIS:
 
     def _throttle(self):
         # 모의투자는 초당 요청 제한이 빡빡하므로 0.5초 간격
-        gap = 0.5 if self.mode == "paper" else 0.1
+        gap = 0.5 if self.mode == "paper" else 0.25
         wait = self._last_call + gap - time.time()
         if wait > 0:
             time.sleep(wait)
         self._last_call = time.time()
 
     def get(self, path: str, tr_key: str, params: dict) -> dict:
-        self._throttle()
-        r = requests.get(f"{self.base}{path}", headers=self._headers(self.tr(tr_key)), params=params, timeout=20)
-        j = r.json()
-        if j.get("rt_cd") not in ("0", 0):
-            raise RuntimeError(f"{tr_key}: {j.get('msg1') or j}")
+        for i in range(3):  # 조회는 "초당 거래건수 초과" 시 잠깐 쉬고 재시도 (주문 POST 는 재시도하지 않음)
+            self._throttle()
+            r = requests.get(f"{self.base}{path}", headers=self._headers(self.tr(tr_key)), params=params, timeout=20)
+            j = r.json()
+            if j.get("rt_cd") in ("0", 0):
+                return j
+            msg = str(j.get("msg1") or j)
+            if "초당" in msg and i < 2:
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"{tr_key}: {msg}")
         return j
 
     def post(self, path: str, tr_key: str, body: dict) -> dict:
