@@ -37,6 +37,22 @@ class ExitRule:
     max_hold: int = MAX_HOLD
 
 
+RULE_FILE = DATA_DIR / "exit_rule.json"
+
+
+def load_rule() -> ExitRule:
+    """저장된 매도 규칙(화면에서 바꾼 값). 없거나 깨졌으면 기본값. 화면 판정과 자동매도가 같은 규칙을 쓴다."""
+    try:
+        d = json.loads(RULE_FILE.read_text()) if RULE_FILE.exists() else {}
+        return ExitRule(**{k: type(getattr(ExitRule, k))(v) for k, v in d.items() if hasattr(ExitRule, k)})
+    except Exception:  # noqa: BLE001
+        return ExitRule()
+
+
+def save_rule(rule: ExitRule) -> None:
+    atomic_write_text(RULE_FILE, json.dumps(rule.__dict__, ensure_ascii=False, indent=1))
+
+
 def load_positions() -> dict[str, dict]:
     pos = json.loads(POS_FILE.read_text()) if POS_FILE.exists() else {}
     # 앱에서 보낸 매수 주문 자동 등록 (접수된 것만, 체결 확인은 하지 않음)

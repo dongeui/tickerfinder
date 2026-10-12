@@ -150,14 +150,20 @@ textarea{width:100%;min-height:60px}
       <div class="grp"><label>1회 매수 금액</label> 국내 <input type="number" id="k_amt_kr" value="1000000" style="width:100px">원 / 미국 $<input type="number" id="k_amt_us" value="1000" style="width:80px"></div>
       <div class="grp"><button class="ghost" id="btnBal">잔고 새로고침</button></div>
     </div>
-    <div class="note">모의투자/실전은 <code>.env</code>의 KIS_MODE 로 정합니다. 주문은 전부 지정가이며, 매수 탭의 "주문" 버튼 → 초안 확인 → 확인 버튼을 눌렀을 때만 전송됩니다. 자동 주문은 없습니다.</div>
+    <div class="note">모의투자/실전은 <code>.env</code>의 KIS_MODE 로 정합니다. 주문은 전부 지정가입니다. 매수는 "주문" 버튼 → 초안 확인 → 확인을 눌렀을 때만 전송되고, 매도는 아래 자동매도가 켜져 있으면 장 마감 전 규칙 판정으로 자동 전송됩니다.</div>
+    <div class="filters" style="margin-top:4px">
+      <div class="grp"><label style="color:var(--fg);font-weight:600">자동매도</label><span id="as_pill" class="pill">확인 중</span></div>
+      <span id="as_info" class="note" style="margin:0"></span>
+      <div class="grp"><button class="ghost" id="as_dry_us">미국 드라이런</button><button class="ghost" id="as_dry_kr">국내 드라이런</button></div>
+    </div>
+    <details style="margin:4px 0 8px"><summary style="color:var(--muted);font-size:12px;cursor:pointer">자동매도 실행 기록</summary><div id="as_log" style="margin-top:6px"></div></details>
     <div class="gauges" id="k_sum"></div>
     <div class="filters" style="margin-top:4px">
       <div class="grp"><label style="color:var(--fg);font-weight:600">매도 규칙</label></div>
       <div class="grp"><label>과열: 일RSI ≥</label><input type="number" id="x_rd" value="75"><label>주RSI</label><input type="number" id="x_rwlo" value="65">~<input type="number" id="x_rwhi" value="85"></div>
       <div class="grp"><label>트레일 미국: +</label><input type="number" id="x_arm_us" value="10">% 후 고점 -<input type="number" id="x_tr_us" value="15">%</div>
       <div class="grp"><label>국내: +</label><input type="number" id="x_arm_kr" value="5">% 후 고점 -<input type="number" id="x_tr_kr" value="10">%</div>
-      <div class="grp"><label>최대 보유</label><input type="number" id="x_max" value="360">일</div>
+      <div class="grp"><label>최대 보유</label><input type="number" id="x_max" value="360">일</div><span class="note" style="margin:0">바꾸면 저장되고 자동매도도 같은 규칙을 씁니다</span>
     </div>
     <div class="note">판정: <b style="color:var(--warn)">절반 매도</b> = 최고수익이 +10%(국내 +5%)를 넘은 시점, <b style="color:var(--sell)">잔량/전량 매도</b> = 과열 조건·트레일·기한 도달. 보유 종목마다 매수일·매수가를 기준으로 판정합니다. 이 앱에서 보낸 매수 주문은 자동 등록되고, 다른 곳에서 산 종목은 매수일을 직접 입력하세요(한투 잔고의 평단이 매수가로 들어갑니다). 고정 손절은 두지 않습니다(20년 검증에서 성과를 깎음).</div>
     <div id="k_pos"></div>
@@ -703,6 +709,7 @@ function barChart(H){
 }
 
 // ---------- 한국투자증권 계좌 / 주문 ----------
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let KIS_OK = false, ACCT = null;
 async function loadKisStatus(){
   try{ const s = await (await fetch('/api/kis/status')).json(); KIS_OK = !!(s.configured && s.token_ok);
@@ -710,8 +717,31 @@ async function loadKisStatus(){
     $('#k_status').className = 'pill '+(KIS_OK?'ok':'no'); }
   catch(e){ KIS_OK=false; $('#k_status').textContent='상태 확인 실패'; }
 }
+async function loadAutosell(){
+  let j; try{ j = await (await fetch('/api/autosell/status')).json(); }catch(e){ $('#as_pill').textContent='상태 확인 실패'; return; }
+  const p=$('#as_pill');
+  if(!j.enabled){ p.className='pill'; p.textContent='꺼짐 (AUTO_SELL=0)'; }
+  else if(j.dry){ p.className='pill warn'; p.textContent='드라이런 (주문 안 보냄)'; }
+  else { p.className='pill ok'; p.textContent='실주문 켜짐'; }
+  $('#as_info').textContent = `다음 판정 국내 ${j.next.KR} · 미국 ${j.next.US} (KST) · 지정가 현재가 -${j.limit_pct}% · 거래일당 지역별 ${j.max_per_day}건 · 오늘 국내 ${j.today_orders.KR}건 / 미국 ${j.today_orders.US}건` + (j.running?' · 실행 중':'') + (j.last?.US?.error||j.last?.KR?.error?` · 마지막 오류: ${j.last.US?.error||j.last.KR?.error}`:'');
+  const h=j.history||[];
+  if(!h.length){ $('#as_log').innerHTML='<div class="note">아직 없음</div>'; return; }
+  const st={dry:['드라이런','warn'],ordered:['주문 전송','ok'],error:['실패','no'],skipped:['건너뜀','']};
+  $('#as_log').innerHTML='<table><thead><tr><th class="l">시각</th><th class="l">지역</th><th class="l">종목</th><th class="l">신호</th><th>수량</th><th>지정가</th><th class="l">결과</th></tr></thead><tbody>'+h.map(r=>{
+    const rows=r.decisions||[];
+    if(!rows.length) return `<tr><td class="l">${esc(r.at).replace('T',' ')}</td><td class="l">${esc(r.region)}</td><td class="l" colspan="5" style="color:var(--muted)">${esc(r.error||'매도 신호 없음')}${r.sync_error?' · 동기화 오류: '+esc(r.sync_error):''}</td></tr>`;
+    return rows.map(d=>{ const [lab,cls]=st[d.status]||[esc(d.status),''];
+      return `<tr><td class="l">${esc(r.at).replace('T',' ')}</td><td class="l">${esc(r.region)}</td><td class="l">${esc(d.name||d.ticker)} <span style="color:var(--muted);font-size:11px">${esc(d.ticker)}</span></td><td class="l" style="font-size:11px">${d.action==='HALF'?'절반':'전량'} · ${esc((d.reasons||[]).join(', '))}</td><td class="num">${d.qty??'-'}</td><td class="num">${d.price!=null?fmtN(d.price,r.region==='KR'?0:2):'-'}</td><td class="l"><span class="pill ${cls}">${lab}</span> <span style="font-size:11px;color:var(--muted)">${esc(d.why||d.msg||(d.odno?'주문번호 '+d.odno:''))}</span></td></tr>`; }).join('');
+  }).join('')+'</tbody></table>';
+}
+async function runAutosellDry(region){
+  const b=$('#as_dry_'+region.toLowerCase()); b.disabled=true; b.textContent='판정 중… (동기화 포함 1~2분)';
+  try{ const j=await (await fetch('/api/autosell/run?region='+region+'&dry=true',{method:'POST'})).json(); if(j.detail) alert(j.detail); }catch(e){ alert('실패: '+e.message); }
+  b.disabled=false; b.textContent=(region==='US'?'미국':'국내')+' 드라이런'; loadAutosell(); loadExits();
+}
+$('#as_dry_us').onclick=()=>runAutosellDry('US'); $('#as_dry_kr').onclick=()=>runAutosellDry('KR');
 async function loadAcct(){
-  await loadKisStatus(); loadExits();
+  await loadKisStatus(); loadExits(); loadAutosell();
   if(!KIS_OK){ $('#k_sum').innerHTML=''; $('#k_hold').innerHTML='<div class="empty">.env 에 KIS_APP_KEY / KIS_APP_SECRET / KIS_ACCOUNT 를 넣으면 바로 반영됩니다 (.env.example 참고).</div>'; return; }
   $('#k_hold').innerHTML='<div class="note">잔고 조회 중…</div>';
   try{ ACCT = await (await fetch('/api/kis/balance')).json(); }catch(e){ $('#k_hold').innerHTML='<div class="empty">잔고 조회 실패</div>'; return; }
@@ -763,10 +793,14 @@ async function loadTrades(){
   $('#k_orders').innerHTML = od.length ? '<table><thead><tr><th class="l">시각</th><th class="l">모드</th><th class="l">종목</th><th class="l">구분</th><th>수량</th><th>가격</th><th class="l">주문번호</th><th class="l">응답</th></tr></thead><tbody>'+od.map(o=>`<tr><td class="l">${o.at.replace('T',' ')}</td><td class="l">${o.mode}</td><td class="l">${o.ticker}</td><td class="l ${o.side==='buy'?'hit':'miss'}">${o.side==='buy'?'매수':'매도'}</td><td class="num">${o.qty}</td><td class="num">${fmtN(o.price,o.region==='KR'?0:2)}</td><td class="l">${o.odno||'<span class="miss">없음</span>'}</td><td class="l" style="font-size:11px;color:var(--muted)">${o.msg||''}</td></tr>`).join('')+'</tbody></table>' : '<div class="note">아직 없음</div>';
 }
 $('#tr_reload').onclick=loadTrades; $('#tr_days').onchange=loadTrades; $('#tr_reg').onchange=loadTrades;
-function exitQuery(){ return new URLSearchParams({rsi_d_min:$('#x_rd').value, rsi_w_lo:$('#x_rwlo').value, rsi_w_hi:$('#x_rwhi').value, arm_us:$('#x_arm_us').value, trail_us:$('#x_tr_us').value, arm_kr:$('#x_arm_kr').value, trail_kr:$('#x_tr_kr').value, max_hold:$('#x_max').value}); }
+const RULE_IDS={rsi_d_min:'x_rd', rsi_w_lo:'x_rwlo', rsi_w_hi:'x_rwhi', arm_us:'x_arm_us', trail_us:'x_tr_us', arm_kr:'x_arm_kr', trail_kr:'x_tr_kr', max_hold:'x_max'};
+let RULE_LOADED=false;
+async function loadRule(){ if(RULE_LOADED) return; try{ const r=await (await fetch('/api/exit_rule')).json(); for(const [k,id] of Object.entries(RULE_IDS)) $('#'+id).value=r[k]; RULE_LOADED=true; }catch(e){} }
+async function saveRule(){ const body={}; for(const [k,id] of Object.entries(RULE_IDS)) body[k]=+$('#'+id).value; await fetch('/api/exit_rule',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
 async function loadExits(){
   $('#k_pos').innerHTML='<div class="note">판정 중…</div>';
-  let j; try{ j = await (await fetch('/api/exit_signals?'+exitQuery())).json(); }catch(e){ $('#k_pos').innerHTML='<div class="empty">판정 실패</div>'; return; }
+  await loadRule();
+  let j; try{ j = await (await fetch('/api/exit_signals')).json(); }catch(e){ $('#k_pos').innerHTML='<div class="empty">판정 실패</div>'; return; }
   const P=j.positions; if(!P.length){ $('#k_pos').innerHTML='<div class="empty">추적 중인 포지션이 없습니다. 매수 주문을 보내거나 아래에서 직접 추가하세요.</div>'; return; }
   const pct=v=>v==null?'-':`<span class="${v>=0?'up':'dn'}">${v>=0?'+':''}${fmtN(v,1)}%</span>`;
   let h='<table><thead><tr><th class="l">종목</th><th class="l">판정</th><th class="l">매수일</th><th>매수가</th><th>현재가</th><th>수익</th><th>보유일</th><th>최고수익</th><th>고점대비</th><th>트레일</th><th class="l">근거</th><th></th></tr></thead><tbody>';
@@ -787,7 +821,7 @@ async function loadExits(){
   $('#k_pos').querySelectorAll('button.ord').forEach(b=>b.onclick=()=>orderDraft(b.dataset.t,'sell',+b.dataset.qty));
   $('#k_pos').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); openTab('buy'); showTicker(a.dataset.t,'b');});
 }
-['x_rd','x_rwlo','x_rwhi','x_arm_us','x_tr_us','x_arm_kr','x_tr_kr','x_max'].forEach(id=>$('#'+id).addEventListener('change',loadExits));
+Object.values(RULE_IDS).forEach(id=>$('#'+id).addEventListener('change',async()=>{ await saveRule(); loadExits(); }));
 $('#p_add').onclick=async()=>{ const t=$('#p_t').value.trim().toUpperCase(); if(!t) return; await fetch('/api/positions',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:t, entry_date:$('#p_d').value||null, entry_px:$('#p_px').value?+$('#p_px').value:null, qty:$('#p_q').value?+$('#p_q').value:null, note:'직접 입력'})}); $('#p_t').value=''; loadExits(); };
 async function orderDraft(t, side, qtyHint){
   if(!KIS_OK){ alert('KIS 연결이 안 되어 있습니다 (계좌 탭 확인)'); return; }

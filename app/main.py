@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, backtest, kis, longhist, positions, scanner
+from . import analysis, autosell, backtest, kis, longhist, positions, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -38,6 +38,10 @@ def _start_scheduler():
     if AUTO_SCAN_TIMES:
         threading.Thread(target=scanner.scheduler_loop, args=(AUTO_SCAN_TIMES, KOSDAQ_TOP, INTRADAY_SYNC), daemon=True).start()
         log.info("auto scan at %s KST (weekdays), intraday sync %s", AUTO_SCAN_TIMES, "on" if INTRADAY_SYNC else "off")
+    autosell.KOSDAQ_TOP = KOSDAQ_TOP
+    threading.Thread(target=autosell.loop, daemon=True).start()
+    cfg = autosell.config()
+    log.info("auto sell %s (dry=%s) KR %s KST / US %s NY", "on" if cfg["enabled"] else "off", cfg["dry"], cfg["time_kr"], cfg["time_us"])
 
 
 @app.get("/")
@@ -365,11 +369,6 @@ class Position(BaseModel):
     half_done: bool | None = None
 
 
-def _exit_rule(rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85,
-               arm_us: float = 10, trail_us: float = 15, arm_kr: float = 5, trail_kr: float = 10, max_hold: int = 360) -> positions.ExitRule:
-    return positions.ExitRule(rsi_d_min, rsi_w_lo, rsi_w_hi, arm_us, trail_us, arm_kr, trail_kr, max_hold)
-
-
 @app.get("/api/positions")
 def get_positions():
     return positions.load_positions()
@@ -401,13 +400,34 @@ def del_position(ticker: str):
     return pos
 
 
+@app.get("/api/exit_rule")
+def get_exit_rule():
+    return positions.load_rule().__dict__
+
+
+class RuleIn(BaseModel):
+    rsi_d_min: float = 75
+    rsi_w_lo: float = 65
+    rsi_w_hi: float = 85
+    arm_us: float = 10
+    trail_us: float = 15
+    arm_kr: float = 5
+    trail_kr: float = 10
+    max_hold: int = 360
+
+
+@app.put("/api/exit_rule")
+def put_exit_rule(r: RuleIn):
+    """매도 규칙 저장. 계좌 탭 판정과 자동매도가 같은 값을 쓴다."""
+    rule = positions.ExitRule(**r.model_dump())
+    positions.save_rule(rule)
+    return rule.__dict__
+
+
 @app.get("/api/exit_signals")
-def exit_signals(
-    with_broker: bool = True, rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85,
-    arm_us: float = 10, trail_us: float = 15, arm_kr: float = 5, trail_kr: float = 10, max_hold: int = 360,
-):
-    """포지션별 매도 규칙 판정. with_broker=true 이고 KIS 설정이 있으면 한투 보유 종목도 합친다."""
-    rule = _exit_rule(rsi_d_min, rsi_w_lo, rsi_w_hi, arm_us, trail_us, arm_kr, trail_kr, max_hold)
+def exit_signals(with_broker: bool = True):
+    """포지션별 매도 규칙 판정(저장된 규칙). with_broker=true 이고 KIS 설정이 있으면 한투 보유 종목도 합친다."""
+    rule = positions.load_rule()
     holdings, errors = [], []
     c = kis.client()
     if with_broker and c.configured:
@@ -417,6 +437,23 @@ def exit_signals(
             except Exception as e:  # noqa: BLE001
                 errors.append(str(e))
     return {"positions": positions.evaluate_all(rule, holdings), "rule": rule.__dict__, "errors": errors, "broker": bool(with_broker and c.configured)}
+
+
+# ---------- 자동 매도 ----------
+@app.get("/api/autosell/status")
+def autosell_status():
+    cfg = autosell.config()
+    hist = autosell.history(200)
+    return {**cfg, "running": autosell.STATE["running"], "next": autosell.next_runs(), "last": autosell.STATE["last"],
+            "today_orders": {r: len(autosell.today_orders(r, autosell.trade_date(r), hist)) for r in ("KR", "US")}, "history": hist[:30]}
+
+
+@app.post("/api/autosell/run")
+def autosell_run(region: str = Query(..., pattern="^(KR|US)$"), dry: bool = True):
+    """수동 실행(테스트). dry=false 는 실제 주문 — AUTO_SELL=1 이고 정규장 중일 때만."""
+    if autosell.STATE["running"] or scanner.STATE["running"]:
+        raise HTTPException(409, "스캔 또는 자동매도가 실행 중")
+    return autosell.run(region, dry=dry, force=dry)
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
