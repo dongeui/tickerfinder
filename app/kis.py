@@ -287,7 +287,7 @@ class KIS:
                 raise RuntimeError(rec["msg"]) from e
         out = j.get("output", {})
         rec = {"at": datetime.now().isoformat(timespec="seconds"), "mode": self.mode, "region": region, "ticker": ticker, "side": side,
-               "qty": qty, "price": price, "odno": out.get("ODNO"), "msg": j.get("msg1")}
+               "qty": qty, "price": price, "odno": out.get("ODNO"), "msg": j.get("msg1"), "fill_status": "accepted" if out.get("ODNO") else "rejected"}
         with ORDER_LOG.open("a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return rec

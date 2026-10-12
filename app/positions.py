@@ -1,7 +1,7 @@
 """보유 포지션 기록과 매도 규칙 판정.
 
-포지션(data/positions.json): {ticker: {"entry_date", "entry_px", "qty", "note"}}
-- 이 앱에서 보낸 매수 주문(data/orders.jsonl)은 자동으로 포지션에 등록된다 (없을 때만).
+포지션(data/positions.json): {ticker: {"entry_date", "entry_px", "qty", "note", "fills": {odno: 반영수량}}}
+- 이 앱에서 보낸 주문(data/orders.jsonl)은 체결 대조(fills.py)로 확인된 체결수량만큼만 포지션에 반영된다 (접수만으론 반영 안 함).
 - 한투 잔고에는 평단만 있고 매수일이 없으므로 매수일은 주문 기록 또는 직접 입력.
 
 매도 규칙(scripts/exit_rules.py 검증, 2026-10-12):
@@ -54,30 +54,54 @@ def save_rule(rule: ExitRule) -> None:
 
 
 def load_positions() -> dict[str, dict]:
+    """포지션 파일을 읽고, 앱 주문 중 체결 대조(fills.reconcile)로 확인된 체결수량을 반영한다.
+
+    주문 기록(orders.jsonl)의 filled_qty 중 아직 반영 안 된 만큼만 더하거나 뺀다 (pos[t]["fills"][odno] = 반영한 수량).
+    매수 체결 → 포지션 등록/수량·평단 갱신. 매도 체결 → 수량 차감, 0이면 삭제, 남으면 절반 매도 완료로 기록.
+    """
     pos = json.loads(POS_FILE.read_text()) if POS_FILE.exists() else {}
-    # 앱에서 보낸 매수 주문 자동 등록 (접수된 것만, 체결 확인은 하지 않음)
-    if ORDER_LOG.exists():
-        changed = False
-        for line in ORDER_LOG.read_text().splitlines():
-            try:
-                o = json.loads(line)
-            except Exception:  # noqa: BLE001
+    if not ORDER_LOG.exists():
+        return pos
+    changed = False
+    orders = []
+    for line in ORDER_LOG.read_text().splitlines():
+        try:
+            if line.strip():
+                orders.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    for o in orders:
+        odno, filled = o.get("odno"), float(o.get("filled_qty") or 0)
+        if not odno or filled <= 0:
+            continue
+        t = o["ticker"]
+        applied = float(pos.get(t, {}).get("fills", {}).get(odno, 0))
+        delta = filled - applied
+        if delta <= 0:
+            continue
+        px = float(o.get("filled_px") or o.get("price") or 0)
+        if o["side"] == "buy":
+            p = pos.setdefault(t, {"entry_date": o["at"][:10], "entry_px": px, "qty": 0, "note": f"앱 주문 체결 ({o.get('mode')})"})
+            oldq = float(p.get("qty") or 0)
+            p["entry_px"] = round((float(p.get("entry_px") or px) * oldq + px * delta) / (oldq + delta), 4) if oldq else px
+            p["qty"] = int(oldq + delta)
+            p.setdefault("entry_date", o["at"][:10])
+        else:
+            if t not in pos:
                 continue
-            if o.get("side") == "buy" and o.get("odno") and o["ticker"] not in pos:
-                pos[o["ticker"]] = {"entry_date": o["at"][:10], "entry_px": o["price"], "qty": o["qty"], "note": f"앱 주문 {o['odno']} ({o['mode']})"}
-                changed = True
-            if o.get("side") == "sell" and o.get("odno") and o["ticker"] in pos and o.get("odno") not in pos[o["ticker"]].get("sells", []):
-                cur = pos[o["ticker"]]
-                cur.setdefault("sells", []).append(o["odno"])
-                if cur.get("qty") and o["qty"] >= cur["qty"]:
-                    pos.pop(o["ticker"])
-                else:  # 일부 매도 → 절반 매도 완료로 기록
-                    cur["qty"] = (cur["qty"] - o["qty"]) if cur.get("qty") else None
-                    cur["half_done"] = True
-                    cur["half_date"] = o["at"][:10]
-                changed = True
-        if changed:
-            save_positions(pos)
+            p = pos[t]
+            if p.get("qty") is not None:
+                p["qty"] = max(0, int(float(p["qty"]) - delta))
+                if p["qty"] == 0:
+                    pos.pop(t)
+                    changed = True
+                    continue
+            p["half_done"] = True
+            p["half_date"] = o["at"][:10]
+        p.setdefault("fills", {})[odno] = int(applied + delta)
+        changed = True
+    if changed:
+        save_positions(pos)
     return pos
 
 

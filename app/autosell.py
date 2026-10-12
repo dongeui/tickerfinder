@@ -17,13 +17,13 @@ import json
 import logging
 import math
 import os
-import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import kis, positions, scanner
+from . import fills, kis, positions, scanner
+from .notify import notify
 from .scanner import KST, NY, in_session
 from .universe import DATA_DIR
 
@@ -98,15 +98,6 @@ def today_orders(region: str, tdate: str, hist: list[dict] | None = None) -> lis
         if run_.get("region") == region and run_.get("trade_date") == tdate:
             out += [d for d in run_.get("decisions", []) if d.get("status") == "ordered"]
     return out
-
-
-def notify(title: str, msg: str) -> None:
-    log.info("%s: %s", title, msg)
-    try:
-        subprocess.run(["osascript", "-e", f'display notification "{msg.replace(chr(34), chr(39))}" with title "{title.replace(chr(34), chr(39))}"'],
-                       timeout=5, capture_output=True)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def kr_tick(px: float) -> float:
@@ -239,7 +230,8 @@ def run(region: str, dry: bool | None = None, force: bool = False, wait: float =
                 o = c.order(region, t, "sell", qty, limit)
                 d["status"] = "ordered"; d["odno"] = o.get("odno"); d["msg"] = o.get("msg")
                 n_today += 1
-                notify("자동매도 주문 전송", f"{label} · 주문번호 {o.get('odno')}")
+                notify("자동매도 주문 전송", f"{label} · 주문번호 {o.get('odno')} (체결은 대조 후 알림)")
+                fills.reconcile_later(20)
             except Exception as ex:  # noqa: BLE001
                 d["status"] = "error"; d["why"] = str(ex)
                 notify("자동매도 주문 실패", f"{label}: {ex}")

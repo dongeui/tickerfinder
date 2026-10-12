@@ -184,7 +184,9 @@ textarea{width:100%;min-height:60px}
     <div class="gauges" id="tr_sum"></div>
     <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">한투 주문·체결 내역 <span style="font-weight:400">(계좌 기준, 다른 곳에서 낸 주문 포함 · <span class="pill ok" style="font-size:10px">앱</span> = 이 화면에서 보낸 주문)</span></h3>
     <div id="tr_table"></div>
-    <details style="margin:12px 0"><summary style="color:var(--muted);font-size:12px;cursor:pointer">이 앱에서 보낸 주문 기록 (로컬 로그)</summary><div id="k_orders" style="margin-top:6px"></div></details>
+    <details style="margin:12px 0" open><summary style="color:var(--muted);font-size:12px;cursor:pointer">이 앱에서 보낸 주문의 체결 여부 (한투 체결내역과 대조 · 주문 후 자동, 미확정 주문 있으면 2분마다)</summary>
+      <div class="filters" style="margin-top:6px"><div class="grp"><button class="ghost" id="fl_btn">지금 대조</button></div><span id="fl_note" class="note" style="margin:0"></span></div>
+      <div id="k_orders" style="margin-top:6px"></div></details>
   </section>
 
   <!-- ===== 주문 초안 ===== -->
@@ -709,6 +711,8 @@ function barChart(H){
 }
 
 // ---------- 한국투자증권 계좌 / 주문 ----------
+const FILL_LAB={accepted:['접수(대조 전)','warn'],open:['미체결','warn'],partial:['부분체결','warn'],filled:['체결','ok'],expired:['미체결 만료',''],cancelled:['취소',''],rejected:['거부','no']};
+const fillPill=(st,o)=>{ const [lab,cls]=FILL_LAB[st]||[st||'-','']; const q=o&&o.filled_qty?` ${o.filled_qty}주${o.filled_px?' @ '+fmtN(o.filled_px,2):''}`:''; return `<span class="pill ${cls}" style="font-size:10px">${esc(lab)}</span>${esc(q)}`; };
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let KIS_OK = false, ACCT = null;
 async function loadKisStatus(){
@@ -731,7 +735,7 @@ async function loadAutosell(){
     const rows=r.decisions||[];
     if(!rows.length) return `<tr><td class="l">${esc(r.at).replace('T',' ')}</td><td class="l">${esc(r.region)}</td><td class="l" colspan="5" style="color:var(--muted)">${esc(r.error||'매도 신호 없음')}${r.sync_error?' · 동기화 오류: '+esc(r.sync_error):''}</td></tr>`;
     return rows.map(d=>{ const [lab,cls]=st[d.status]||[esc(d.status),''];
-      return `<tr><td class="l">${esc(r.at).replace('T',' ')}</td><td class="l">${esc(r.region)}</td><td class="l">${esc(d.name||d.ticker)} <span style="color:var(--muted);font-size:11px">${esc(d.ticker)}</span></td><td class="l" style="font-size:11px">${d.action==='HALF'?'절반':'전량'} · ${esc((d.reasons||[]).join(', '))}</td><td class="num">${d.qty??'-'}</td><td class="num">${d.price!=null?fmtN(d.price,r.region==='KR'?0:2):'-'}</td><td class="l"><span class="pill ${cls}">${lab}</span> <span style="font-size:11px;color:var(--muted)">${esc(d.why||d.msg||(d.odno?'주문번호 '+d.odno:''))}</span></td></tr>`; }).join('');
+      return `<tr><td class="l">${esc(r.at).replace('T',' ')}</td><td class="l">${esc(r.region)}</td><td class="l">${esc(d.name||d.ticker)} <span style="color:var(--muted);font-size:11px">${esc(d.ticker)}</span></td><td class="l" style="font-size:11px">${d.action==='HALF'?'절반':'전량'} · ${esc((d.reasons||[]).join(', '))}</td><td class="num">${d.qty??'-'}</td><td class="num">${d.price!=null?fmtN(d.price,r.region==='KR'?0:2):'-'}</td><td class="l"><span class="pill ${cls}">${lab}</span> <span style="font-size:11px;color:var(--muted)">${esc(d.why||d.msg||(d.odno?'주문번호 '+d.odno:''))}</span>${d.odno&&j.fills[d.odno]?' '+fillPill(j.fills[d.odno].fill_status,j.fills[d.odno]):''}</td></tr>`; }).join('');
   }).join('')+'</tbody></table>';
 }
 async function runAutosellDry(region){
@@ -790,8 +794,9 @@ async function loadTrades(){
     $('#tr_table').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); openTab('buy'); showTicker(a.dataset.t,'b');});
   }
   const od=j.app_orders||[];
-  $('#k_orders').innerHTML = od.length ? '<table><thead><tr><th class="l">시각</th><th class="l">모드</th><th class="l">종목</th><th class="l">구분</th><th>수량</th><th>가격</th><th class="l">주문번호</th><th class="l">응답</th></tr></thead><tbody>'+od.map(o=>`<tr><td class="l">${o.at.replace('T',' ')}</td><td class="l">${o.mode}</td><td class="l">${o.ticker}</td><td class="l ${o.side==='buy'?'hit':'miss'}">${o.side==='buy'?'매수':'매도'}</td><td class="num">${o.qty}</td><td class="num">${fmtN(o.price,o.region==='KR'?0:2)}</td><td class="l">${o.odno||'<span class="miss">없음</span>'}</td><td class="l" style="font-size:11px;color:var(--muted)">${o.msg||''}</td></tr>`).join('')+'</tbody></table>' : '<div class="note">아직 없음</div>';
+  $('#k_orders').innerHTML = od.length ? '<table><thead><tr><th class="l">시각</th><th class="l">모드</th><th class="l">종목</th><th class="l">구분</th><th>수량</th><th>지정가</th><th class="l">체결</th><th class="l">주문번호</th><th class="l">응답</th></tr></thead><tbody>'+od.map(o=>`<tr><td class="l">${esc(o.at).replace('T',' ')}</td><td class="l">${esc(o.mode)}</td><td class="l">${esc(o.ticker)}</td><td class="l ${o.side==='buy'?'hit':'miss'}">${o.side==='buy'?'매수':'매도'}</td><td class="num">${o.qty}</td><td class="num">${fmtN(o.price,o.region==='KR'?0:2)}</td><td class="l">${o.odno?fillPill(o.fill_status||'accepted',o):'-'}${o.reject_reason?` <span style="font-size:11px;color:var(--muted)">${esc(o.reject_reason)}</span>`:''}</td><td class="l">${esc(o.odno)||'<span class="miss">없음</span>'}</td><td class="l" style="font-size:11px;color:var(--muted)">${esc(o.msg||'')}</td></tr>`).join('')+'</tbody></table>' : '<div class="note">아직 없음</div>';
 }
+$('#fl_btn').onclick=async()=>{ const b=$('#fl_btn'); b.disabled=true; b.textContent='대조 중…'; try{ const j=await (await fetch('/api/fills/reconcile',{method:'POST'})).json(); $('#fl_note').textContent=`확인 ${j.checked}건 · 변경 ${j.changed.length}건` + (j.errors.length?' · '+j.errors.join(' / '):''); }catch(e){ $('#fl_note').textContent='대조 실패: '+e.message; } b.disabled=false; b.textContent='지금 대조'; loadTrades(); };
 $('#tr_reload').onclick=loadTrades; $('#tr_days').onchange=loadTrades; $('#tr_reg').onchange=loadTrades;
 const RULE_IDS={rsi_d_min:'x_rd', rsi_w_lo:'x_rwlo', rsi_w_hi:'x_rwhi', arm_us:'x_arm_us', trail_us:'x_tr_us', arm_kr:'x_arm_kr', trail_kr:'x_tr_kr', max_hold:'x_max'};
 let RULE_LOADED=false;

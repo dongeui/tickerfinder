@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, autosell, backtest, kis, longhist, positions, scanner
+from . import analysis, autosell, backtest, fills, kis, longhist, positions, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -40,6 +40,7 @@ def _start_scheduler():
         log.info("auto scan at %s KST (weekdays), intraday sync %s", AUTO_SCAN_TIMES, "on" if INTRADAY_SYNC else "off")
     autosell.KOSDAQ_TOP = KOSDAQ_TOP
     threading.Thread(target=autosell.loop, daemon=True).start()
+    threading.Thread(target=fills.loop, daemon=True).start()
     cfg = autosell.config()
     log.info("auto sell %s (dry=%s) KR %s KST / US %s NY", "on" if cfg["enabled"] else "off", cfg["dry"], cfg["time_kr"], cfg["time_us"])
 
@@ -354,9 +355,18 @@ def kis_order(o: Order):
         raise HTTPException(400, "side must be buy or sell")
     t = o.ticker.upper()
     try:
-        return c.order("KR" if t.isdigit() else "US", t, o.side, o.qty, o.price)
+        rec = c.order("KR" if t.isdigit() else "US", t, o.side, o.qty, o.price)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, str(e))
+    if rec.get("odno"):
+        fills.reconcile_later(20)
+    return rec
+
+
+@app.post("/api/fills/reconcile")
+def fills_reconcile():
+    """앱 주문의 체결 여부를 한투 체결내역과 대조 (주문 후 자동으로도 돌지만 수동 확인용)."""
+    return {**fills.reconcile(), "state": fills.STATE}
 
 
 # ---------- 보유 포지션 / 매도 규칙 ----------
@@ -445,7 +455,9 @@ def autosell_status():
     cfg = autosell.config()
     hist = autosell.history(200)
     return {**cfg, "running": autosell.STATE["running"], "next": autosell.next_runs(), "last": autosell.STATE["last"],
-            "today_orders": {r: len(autosell.today_orders(r, autosell.trade_date(r), hist)) for r in ("KR", "US")}, "history": hist[:30]}
+            "today_orders": {r: len(autosell.today_orders(r, autosell.trade_date(r), hist)) for r in ("KR", "US")}, "history": hist[:30],
+            "fills": {o["odno"]: {k: o.get(k) for k in ("fill_status", "filled_qty", "filled_px", "remaining", "reject_reason")} for o in fills.load_orders() if o.get("odno")},
+            "fills_state": fills.STATE}
 
 
 @app.post("/api/autosell/run")
