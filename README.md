@@ -13,7 +13,7 @@
 ./run.sh                 # http://127.0.0.1:8765
 ```
 - 평일 18:10 / 06:40 (KST) 자동 스캔 (국내는 16~18시 시간외 단일가가 네이버 일봉 종가에 섞이므로 18시 이후에만 확정). 환경변수 `AUTO_SCAN_TIMES="18:10,06:40"` 로 변경, 빈 값이면 비활성.
-- 장중 시간별 잠정 동기화: 국내 KST 09:05~15:05 매시 + 15:35, 미국 뉴욕시간 10:05~15:05 매시(서머타임 자동). 해당 지역만 다시 받아(미국 약 30초, 국내 약 1분) 당일 미완성 봉을 포함해 지표를 계산하고 `results.json`에 `partial`·`synced_at`으로 표시한다. 잠정값은 가격 캐시(`data/prices`)와 히스토리(`data/history`)에는 남기지 않으며 마감 후 자동 스캔에서 확정된다. 화면 "지금 동기화" 버튼은 현재 지역만 즉시 동기화(장중이면 잠정, 아니면 확정). `INTRADAY_SYNC=0` 이면 끔. API: `POST /api/scan?region=US|KR&intraday=true|false`.
+- 장중 잠정 동기화: 기본 60분 간격(`INTRADAY_MINUTES`, 5~60), 국내 KST 09:05~15:35, 미국 뉴욕시간 09:35~16:00(서머타임 자동). 해당 지역만 다시 받아(미국 약 30초, 국내 약 1분) 당일 미완성 봉을 포함해 지표를 계산하고 `results.json`에 `partial`·`synced_at`으로 표시한다. 잠정값은 가격 캐시(`data/prices`)와 히스토리(`data/history`)에는 남기지 않으며 마감 후 자동 스캔에서 확정된다. 화면 "지금 동기화" 버튼은 현재 지역만 즉시 동기화(장중이면 잠정, 아니면 확정). `INTRADAY_SYNC=0` 이면 끔. API: `POST /api/scan?region=US|KR&intraday=true|false`.
 - 코스닥 포함 개수: `KOSDAQ_TOP=100`
 - 수동 스캔: 화면의 "스캔 실행" 버튼 또는 `curl -X POST localhost:8765/api/scan`
 

@@ -66,7 +66,7 @@ def start_scan(region: str | None = None, intraday: bool = False):
 def status():
     now = datetime.now(scanner.KST)
     return {**scanner.STATE, "auto_scan_times": AUTO_SCAN_TIMES, "kosdaq_top": KOSDAQ_TOP, "intraday_sync": INTRADAY_SYNC,
-            "intraday_times": {"KR": scanner.INTRADAY_KR, "US_ny": scanner.INTRADAY_US},
+            "intraday_times": {"KR": scanner.INTRADAY_KR, "US_ny": scanner.INTRADAY_US, "minutes": scanner.INTRADAY_MINUTES},
             "session": {"KR": scanner.in_session(now, "KR"), "US": scanner.in_session(now, "US")}}
 
 

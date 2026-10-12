@@ -469,9 +469,24 @@ def load_results() -> dict | None:
 
 
 # ---------- 자동 스케줄 ----------
-# 장중 동기화 시각. 국내: KST 09:05~15:05 매시 + 15:35(마감 직후). 미국: 뉴욕시간 10:05~15:05 매시 (서머타임 자동 반영).
-INTRADAY_KR = [f"{h:02d}:05" for h in range(9, 16)] + ["15:35"]
-INTRADAY_US = [f"{h:02d}:05" for h in range(10, 16)]
+# 장중 동기화 간격(분). 기본 60. 국내: KST 09:05~15:35 (장 09:00~15:30), 미국: 뉴욕 09:35~16:00 (서머타임 자동 반영).
+# 수집이 미국 약 30초 / 국내 약 1분이라 10분 밑으로는 권하지 않는다 (네이버·야후 호출 제한).
+INTRADAY_MINUTES = max(5, min(60, int(os.environ.get("INTRADAY_MINUTES", "60"))))
+
+
+def _times(start: str, end: str, step: int) -> list[str]:
+    h, m = map(int, start.split(":"))
+    eh, em = map(int, end.split(":"))
+    out = []
+    while (h, m) <= (eh, em):
+        out.append(f"{h:02d}:{m:02d}")
+        m += step
+        h, m = h + m // 60, m % 60
+    return out
+
+
+INTRADAY_KR = sorted(set(_times("09:05", "15:30", INTRADAY_MINUTES) + ["15:35"]))
+INTRADAY_US = sorted(set(_times("09:35", "15:55", INTRADAY_MINUTES) + ["16:00"]))
 NY = ZoneInfo("America/New_York")
 
 
