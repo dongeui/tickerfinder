@@ -58,22 +58,34 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def drop_partial_bar(df: pd.DataFrame, region: str) -> pd.DataFrame:
-    """장중에 스캔하면 마지막 봉이 미완성이므로 제거한다 (KR: 18:05 KST 이전, US: 16:05 NY 이전).
+KEEP_PARTIAL = False  # 장중 동기화 모드: 미완성 봉을 지표 계산에는 쓰되 캐시/히스토리에는 저장하지 않음 (run_scan 이 설정)
+
+
+def region_of(ticker: str) -> str:
+    return "KR" if (ticker.isdigit() or ticker in ("^KS11", "^KQ11")) else "US"
+
+
+def is_partial_bar(df: pd.DataFrame, region: str) -> bool:
+    """마지막 봉이 아직 확정되지 않은 당일 봉인가 (KR: 18:05 KST 이전, US: 16:05 NY 이전).
 
     네이버 일봉은 16:00~18:00 시간외 단일가 체결가를 당일 종가로 내보내므로 국내는 18:00 이후에만 확정으로 본다.
     """
     if df is None or not len(df):
-        return df
+        return False
     if region == "KR":
         now = datetime.now(KST)
-        if now.strftime("%H:%M") < "18:05" and df.index[-1].date() == now.date():
-            return df.iloc[:-1]
-    else:
-        now = datetime.now(ZoneInfo("America/New_York"))
-        if now.strftime("%H:%M") < "16:05" and df.index[-1].date() == now.date():
-            return df.iloc[:-1]
-    return df
+        return now.strftime("%H:%M") < "18:05" and df.index[-1].date() == now.date()
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return now.strftime("%H:%M") < "16:05" and df.index[-1].date() == now.date()
+
+
+def drop_partial_bar(df: pd.DataFrame, region: str, force: bool = False) -> pd.DataFrame:
+    """장중에 스캔하면 마지막 봉이 미완성이므로 제거한다. KEEP_PARTIAL(장중 동기화) 중에는 force=True 일 때만 제거."""
+    if df is None or not len(df):
+        return df
+    if KEEP_PARTIAL and not force:
+        return df
+    return df.iloc[:-1] if is_partial_bar(df, region) else df
 
 
 # ---------- 로컬 가격 캐시 ----------
@@ -117,12 +129,16 @@ def merge_cache(ticker: str, new: pd.DataFrame | None) -> pd.DataFrame | None:
     else:
         df = new.sort_index()
     df = df.tail(CACHE_KEEP)
-    # 이전 스캔에서 들어온 장중 미완성 봉도 제거 (캐시에 남지 않도록)
-    df = drop_partial_bar(df, "KR" if (ticker.isdigit() or ticker in ("^KS11", "^KQ11")) else "US")
+    # 장중 미완성 봉은 캐시에 남기지 않는다 (장중 동기화 모드에서는 반환값에만 붙여 지표 계산에 사용)
+    region = region_of(ticker)
+    partial = df.iloc[-1:] if (KEEP_PARTIAL and ticker != "KRW=X" and is_partial_bar(df, region)) else None
+    df = drop_partial_bar(df, region, force=True)
     try:
         df.to_parquet(_cache_path(ticker))
     except Exception as e:  # noqa: BLE001
         log.warning("cache write failed %s: %s", ticker, e)
+    if partial is not None:
+        df = pd.concat([df, partial])
     return df
 
 
@@ -341,12 +357,23 @@ def rebound_score(rows: list[dict]) -> None:
 
 
 # ---------- 스캔 ----------
-def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US")) -> dict:
+INDEX_REGION = {"IXIC": "US", "GSPC": "US", "USDKRW": "US", "KS11": "KR", "KQ11": "KR", "NDX_KR": "KR", "SPX_KR": "KR"}
+
+
+def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), intraday: bool = False) -> dict:
+    """전체 스캔. regions 를 일부만 주면 그 지역만 다시 수집하고 나머지 지역은 이전 결과를 유지한다.
+
+    intraday=True(장중 동기화): 당일 미완성 봉을 포함해 지표를 계산하되 캐시·히스토리에는 저장하지 않는다.
+    결과 행에는 partial=True, 결과에는 지역별 synced_at 이 기록된다.
+    """
+    global KEEP_PARTIAL
     with _lock:
         if STATE["running"]:
             raise RuntimeError("scan already running")
         STATE.update(running=True, stage="유니버스 구성", done=0, total=0, error=None, failed=[],
-                     started_at=datetime.now(KST).isoformat(timespec="seconds"), finished_at=None)
+                     started_at=datetime.now(KST).isoformat(timespec="seconds"), finished_at=None,
+                     mode=("장중 " if intraday else "") + "/".join(regions))
+        KEEP_PARTIAL = intraday
     try:
         uni = build_universe(kosdaq_top)
         uni = [u for u in uni if u["region"] in regions]
@@ -361,14 +388,19 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US")) -> 
             prices.update(fetch_us([u["ticker"] for u in us]))
 
         _set(stage="지수 수집")
-        indices = {}
+        prev = load_results() if len(regions) < 2 else None
+        indices = {k: v for k, v in (prev or {}).get("indices", {}).items() if INDEX_REGION.get(k, "US") not in regions}
         for key, sym in INDICES.items():
+            if INDEX_REGION[key] not in regions:
+                continue
             df = fetch_index(sym)
             im = index_metrics(df) if df is not None else None
             if im is not None:
                 indices[key] = im
 
         for key, code in KR_PROXIES.items():
+            if INDEX_REGION[key] not in regions:
+                continue
             df = fetch_kr_one(code)
             im = index_metrics(df) if df is not None else None
             if im is not None:
@@ -387,23 +419,38 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US")) -> 
             row = {**u, **m}
             if pm:
                 row["prev"] = {k: pm.get(k) for k in ("rsi_d", "rsi_w", "stoch_k", "stoch_k_w", "band_pos", "close", "date")}
+            if intraday and is_partial_bar(df, u["region"]):
+                row["partial"] = True
             rows.append(row)
             rows_by_date.setdefault(m["date"], []).append(row)
 
+        now_s = datetime.now(KST).isoformat(timespec="seconds")
+        synced = dict((prev or {}).get("synced_at", {}))
+        if prev:  # 이번에 수집하지 않은 지역은 이전 결과 유지
+            rows = [r for r in prev.get("stocks", []) if r.get("region") not in regions] + rows
+            failed = [t for t in prev.get("failed", []) if t not in {u["ticker"] for u in uni}] + failed
+            universe = dict(prev.get("universe", {}))
+        else:
+            universe = {}
+        universe.update({"kosdaq_top": kosdaq_top, **({"kr": len(kr)} if kr else {}), **({"us": len(us)} if us else {})})
+        for reg in regions:
+            synced[reg] = {"at": now_s, "partial": intraday and any(r.get("partial") for r in rows if r.get("region") == reg)}
         rebound_score(rows)
         result = {
-            "scanned_at": datetime.now(KST).isoformat(timespec="seconds"),
-            "universe": {"kr": len(kr), "us": len(us), "kosdaq_top": kosdaq_top},
+            "scanned_at": now_s,
+            "synced_at": synced,
+            "universe": universe,
             "indices": indices,
             "stocks": rows,
             "failed": failed,
         }
         atomic_write_text(RESULTS, json.dumps(result, ensure_ascii=False))
-        idx_by_date: dict[str, dict] = {}
-        for k, v in indices.items():
-            if "date" in v:
-                idx_by_date.setdefault(v["date"], {})[k] = v
-        write_history(rows_by_date, idx_by_date)
+        if not intraday:  # 장중 잠정값은 히스토리(체류·백필)에 남기지 않는다
+            idx_by_date: dict[str, dict] = {}
+            for k, v in indices.items():
+                if "date" in v and INDEX_REGION.get(k, "US") in regions:
+                    idx_by_date.setdefault(v["date"], {})[k] = v
+            write_history(rows_by_date, idx_by_date)
         _set(failed=failed, stage="완료")
         return result
     except Exception as e:  # noqa: BLE001
@@ -411,6 +458,7 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US")) -> 
         _set(error=str(e), stage="실패")
         raise
     finally:
+        KEEP_PARTIAL = False
         _set(running=False, finished_at=datetime.now(KST).isoformat(timespec="seconds"))
 
 
@@ -421,16 +469,48 @@ def load_results() -> dict | None:
 
 
 # ---------- 자동 스케줄 ----------
-def scheduler_loop(times: list[str], kosdaq_top: int = 100):
-    """매 분 체크: 평일 지정 시각(KST)에 스캔 실행."""
+# 장중 동기화 시각. 국내: KST 09:05~15:05 매시 + 15:35(마감 직후). 미국: 뉴욕시간 10:05~15:05 매시 (서머타임 자동 반영).
+INTRADAY_KR = [f"{h:02d}:05" for h in range(9, 16)] + ["15:35"]
+INTRADAY_US = [f"{h:02d}:05" for h in range(10, 16)]
+NY = ZoneInfo("America/New_York")
+
+
+def in_session(now: datetime, region: str) -> bool:
+    """정규장 중인가 (휴장일은 고려하지 않음)."""
+    if region == "KR":
+        return now.weekday() < 5 and "09:00" <= now.strftime("%H:%M") <= "15:30"
+    ny = now.astimezone(NY)
+    return ny.weekday() < 5 and "09:30" <= ny.strftime("%H:%M") <= "16:00"
+
+
+def due_intraday(now: datetime) -> tuple[str, ...] | None:
+    """지금 장중 동기화할 지역. 평일 KST 분 단위 일치 → ("KR",), 뉴욕 평일 분 단위 일치 → ("US",)."""
+    if now.weekday() < 5 and now.strftime("%H:%M") in INTRADAY_KR:
+        return ("KR",)
+    ny = now.astimezone(NY)
+    if ny.weekday() < 5 and ny.strftime("%H:%M") in INTRADAY_US:
+        return ("US",)
+    return None
+
+
+def scheduler_loop(times: list[str], kosdaq_top: int = 100, intraday: bool = True):
+    """매 30초 체크: 평일 지정 시각(KST)에 전체 스캔, 장중에는 시간별로 해당 지역만 잠정 동기화."""
     last_run: dict[str, str] = {}
     while True:
         now = datetime.now(KST)
         hm = now.strftime("%H:%M")
-        if now.weekday() < 5 and hm in times and last_run.get(hm) != now.strftime("%Y-%m-%d") and not STATE["running"]:
-            last_run[hm] = now.strftime("%Y-%m-%d")
-            try:
-                run_scan(kosdaq_top)
-            except Exception:  # noqa: BLE001
-                pass
+        key = now.strftime("%Y-%m-%d %H:%M")
+        if not STATE["running"]:
+            if now.weekday() < 5 and hm in times and last_run.get(hm) != now.strftime("%Y-%m-%d"):
+                last_run[hm] = now.strftime("%Y-%m-%d")
+                try:
+                    run_scan(kosdaq_top)
+                except Exception:  # noqa: BLE001
+                    pass
+            elif intraday and (regs := due_intraday(now)) and last_run.get("intraday") != key:
+                last_run["intraday"] = key
+                try:
+                    run_scan(kosdaq_top, regions=regs, intraday=True)
+                except Exception:  # noqa: BLE001
+                    pass
         time.sleep(30)

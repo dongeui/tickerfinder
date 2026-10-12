@@ -84,9 +84,13 @@ def evaluate(ticker: str, entry_date: str | None, entry_px: float | None, rule: 
         out["reasons"].append("가격 데이터 없음")
         return out
     c = df["Close"].dropna()
+    if cur and cur.get("close") and cur.get("date") and cur["date"] > c.index[-1].strftime("%Y-%m-%d"):
+        # 장중 동기화로 results.json 에 더 새로운(잠정) 종가가 있으면 그것을 현재가로 쓴다
+        c = pd.concat([c, pd.Series([float(cur["close"])], index=[pd.Timestamp(cur["date"])])])
     last = float(c.iloc[-1])
     out["last"] = last
     out["last_date"] = c.index[-1].strftime("%Y-%m-%d")
+    out["partial"] = bool(cur and cur.get("partial"))
     if entry_date:
         seg = c[c.index >= pd.Timestamp(entry_date)]
         if len(seg):

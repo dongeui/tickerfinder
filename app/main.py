@@ -27,6 +27,8 @@ WATCHLIST = DATA_DIR / "watchlist.json"
 KOSDAQ_TOP = int(os.environ.get("KOSDAQ_TOP", "100"))
 # 평일 자동 스캔 시각(KST). 국내는 시간외 단일가(~18:00) 종료 후, 미국은 마감 후. 빈 문자열이면 비활성.
 AUTO_SCAN_TIMES = [t.strip() for t in os.environ.get("AUTO_SCAN_TIMES", "18:10,06:40").split(",") if t.strip()]
+# 장중 시간별 잠정 동기화 (국내 KST 09:05~15:35, 미국 뉴욕 10:05~15:05). INTRADAY_SYNC=0 이면 끔.
+INTRADAY_SYNC = os.environ.get("INTRADAY_SYNC", "1") not in ("0", "false", "no")
 
 app = FastAPI(title="tickerfinder")
 
@@ -34,8 +36,8 @@ app = FastAPI(title="tickerfinder")
 @app.on_event("startup")
 def _start_scheduler():
     if AUTO_SCAN_TIMES:
-        threading.Thread(target=scanner.scheduler_loop, args=(AUTO_SCAN_TIMES, KOSDAQ_TOP), daemon=True).start()
-        log.info("auto scan at %s KST (weekdays)", AUTO_SCAN_TIMES)
+        threading.Thread(target=scanner.scheduler_loop, args=(AUTO_SCAN_TIMES, KOSDAQ_TOP, INTRADAY_SYNC), daemon=True).start()
+        log.info("auto scan at %s KST (weekdays), intraday sync %s", AUTO_SCAN_TIMES, "on" if INTRADAY_SYNC else "off")
 
 
 @app.get("/")
@@ -44,23 +46,28 @@ def index():
 
 
 @app.post("/api/scan")
-def start_scan():
+def start_scan(region: str | None = None, intraday: bool = False):
+    """전체 스캔. region=KR|US 이면 그 지역만, intraday=true 면 장중 잠정 동기화(미완성 봉 포함, 히스토리 미기록)."""
     if scanner.STATE["running"]:
         return JSONResponse({"ok": False, "msg": "already running"}, status_code=409)
+    regions = (region.upper(),) if region and region.upper() in ("KR", "US") else ("KR", "US")
 
     def _run():
         try:
-            scanner.run_scan(KOSDAQ_TOP)
+            scanner.run_scan(KOSDAQ_TOP, regions=regions, intraday=intraday)
         except Exception:  # noqa: BLE001  (RuntimeError: already running 등은 STATE에 기록됨)
             pass
 
     threading.Thread(target=_run, daemon=True).start()
-    return {"ok": True}
+    return {"ok": True, "regions": regions, "intraday": intraday}
 
 
 @app.get("/api/status")
 def status():
-    return {**scanner.STATE, "auto_scan_times": AUTO_SCAN_TIMES, "kosdaq_top": KOSDAQ_TOP}
+    now = datetime.now(scanner.KST)
+    return {**scanner.STATE, "auto_scan_times": AUTO_SCAN_TIMES, "kosdaq_top": KOSDAQ_TOP, "intraday_sync": INTRADAY_SYNC,
+            "intraday_times": {"KR": scanner.INTRADAY_KR, "US_ny": scanner.INTRADAY_US},
+            "session": {"KR": scanner.in_session(now, "KR"), "US": scanner.in_session(now, "US")}}
 
 
 @app.get("/api/results")

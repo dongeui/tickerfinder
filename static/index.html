@@ -35,6 +35,7 @@ main{padding:12px 16px;max-width:1500px;margin:0 auto}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
 .pill.ok{color:var(--buy);border-color:var(--buy)}
 .pill.no{color:var(--sell);border-color:var(--sell)}
+.pill.warn{color:#f0b429;border-color:#f0b429}
 .tabs{display:flex;gap:4px;margin:8px 0 12px;border-bottom:1px solid var(--line)}
 .tabs button{background:transparent;color:var(--muted);border-radius:6px 6px 0 0;padding:8px 16px;font-size:14px}
 .tabs button.on{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-bottom-color:var(--panel)}
@@ -75,7 +76,8 @@ textarea{width:100%;min-height:60px}
 <header>
   <h1>Ticker Finder</h1>
   <div class="seg" id="regionSeg" title="미국과 국내는 조건·확률·매도 규칙이 다르게 검증되어 따로 봅니다"><button data-r="US">미국</button><button data-r="KR">국내</button></div>
-  <button id="btnScan">스캔 실행</button>
+  <button id="btnScan">전체 스캔</button>
+  <button class="ghost" id="btnSync" title="현재 화면 지역만 다시 받아옵니다. 장중이면 지금 가격(잠정)으로 지표를 계산하고, 캐시·히스토리에는 남기지 않습니다">지금 동기화</button>
   <div class="status">
     <span id="stStage">-</span>
     <div class="bar"><i id="stBar"></i></div>
@@ -241,7 +243,7 @@ function openTab(name){
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 
 // ---------- 상태/스캔 ----------
-let pollTimer = null, lastFinished = null;
+let pollTimer = null, lastFinished = null, STATUS = null;
 async function pollStatus(){
   clearTimeout(pollTimer);
   let delay = 15000;
@@ -251,13 +253,24 @@ async function pollStatus(){
     $('#stStage').textContent = s.running ? s.stage : (s.error ? '오류: '+s.error : (s.stage||'대기'));
     $('#stBar').style.width = s.total ? Math.min(100, 100*s.done/s.total)+'%' : '0';
     $('#stCount').textContent = s.running && s.total ? `${s.done}/${s.total}` : '';
-    $('#stLast').textContent = (DATA ? '마지막 스캔 '+DATA.scanned_at.replace('T',' ').slice(0,16) : '') + (s.auto_scan_times.length ? ' · 자동 '+s.auto_scan_times.join('/') : '');
+    STATUS = s;
+    $('#btnSync').disabled = s.running;
+    const sy = (DATA && DATA.synced_at && DATA.synced_at[REGION]) || null;
+    const at = sy ? sy.at : (DATA ? DATA.scanned_at : null);
+    const live = s.session && s.session[REGION];
+    $('#stLast').innerHTML = (at ? `${REGION==='US'?'미국':'국내'} 동기화 ${at.replace('T',' ').slice(5,16)}${sy&&sy.partial?' <span class="pill warn" title="정규장 중 가격으로 계산한 잠정값. 마감 후 자동 스캔에서 확정됩니다">장중 잠정</span>':''}` : '')
+      + (s.auto_scan_times.length ? ` · 자동 ${s.auto_scan_times.join('/')}` : '') + (s.intraday_sync ? ` + 장중 매시${live?' <span class="pill ok">장중</span>':''}` : '');
     if(!s.running && s.finished_at && s.finished_at !== lastFinished){ lastFinished = s.finished_at; if(!s.error) await loadResults(); }
     delay = s.running ? 1500 : 15000;
   }catch(e){ delay = 5000; }
   pollTimer = setTimeout(pollStatus, delay);
 }
 $('#btnScan').onclick = async ()=>{ await fetch('/api/scan',{method:'POST'}); $('#btnScan').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500); };
+$('#btnSync').onclick = async ()=>{
+  const live = !!(STATUS && STATUS.session && STATUS.session[REGION]);
+  await fetch(`/api/scan?region=${REGION}&intraday=${live}`,{method:'POST'});
+  $('#btnSync').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500);
+};
 
 async function loadResults(){
   try{
@@ -317,6 +330,7 @@ function syncRegionUI(){
   $('#wrap_tf_us').style.display = REGION==='US' ? '' : 'none';
   $('#wrap_mkt_kr').style.display = REGION==='KR' ? '' : 'none';
   document.title = (REGION==='US' ? '미국 · ' : '국내 · ') + 'Ticker Finder';
+  if(STATUS){ clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus, 0); }
 }
 document.querySelectorAll('#regionSeg button').forEach(b=>b.onclick=()=>setRegion(b.dataset.r));
 syncRegionUI();
@@ -342,7 +356,7 @@ function setMarket(m){
 function mktOK(region){ const useKr = region==='KR' && $('#b_mkt_kr').checked; const ix = useKr ? DATA?.indices?.KS11 : DATA?.indices?.IXIC; if(!ix||ix.rsi_d==null) return null; return ix.rsi_d>=+$('#b_mkt_lo').value && ix.rsi_d<=+$('#b_mkt_hi').value; }
 function renderGauges(){
   const I = DATA.indices||{}; const ok = mktOK('US'), okK = mktOK('KR');
-  const card = (n, x, extra='', cls='', key=null) => x ? `<div class="g ${cls} ${key?'click':''} ${key&&MARKET===key?'sel':''}" ${key?`data-mkt="${key}" title="클릭하면 아래 표를 이 시장 종목으로 좁힙니다"`:''}><div class="t">${n} <span style="float:right">${x.date||''}</span></div><div class="v">${fmtN(x.rsi_d,1)}</div>
+  const card = (n, x, extra='', cls='', key=null) => x ? `<div class="g ${cls} ${key?'click':''} ${key&&MARKET===key?'sel':''}" ${key?`data-mkt="${key}" title="클릭하면 아래 표를 이 시장 종목으로 좁힙니다"`:''}><div class="t">${n} <span style="float:right">${x.date||''}${(DATA.synced_at&&DATA.synced_at[MKT_REGION[key]||REGION]||{}).partial?' ⏱':''}</span></div><div class="v">${fmtN(x.rsi_d,1)}</div>
       <div class="s">스토캐 %K ${fmtN(x.stoch_k,1)} · 주봉 RSI ${fmtN(x.rsi_w,1)} · 종가 ${fmtN(x.close,0)} ${x.chg==null?'':`<span class="${x.chg>=0?'up':'dn'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`}${extra}</div></div>` : '';
   const gap = (a,b) => (a&&b&&a.rsi_d!=null&&b.rsi_d!=null) ? `<div style="margin-top:4px"><span class="pill">나스닥 RSI와 차이 ${(a.rsi_d-b.rsi_d)>=0?'+':''}${fmtN(a.rsi_d-b.rsi_d,1)}</span></div>` : '';
   let h = rsiDistCard();
@@ -509,7 +523,7 @@ function renderTable(mode){
   for(const r of rows){ const s=r.s;
     h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 추세·체류·장기 확률 상세">` + cols.map(([k,n,l])=>{
       let v;
-      if(k==='name') v = `<div>${s.name} <span style="color:var(--muted);font-size:11px">${s.ticker} · ${s.market}</span>${r.isNew?'<span class="new">NEW</span>':''}${s.rule_a?' <span class="pill ok" title="200일선 상승 & 50일선 -9% 이하 & RSI≤40 (과거 시장 환경 충족 국면에서 가장 크게 반등한 유형)">A</span>':''}${s.suspect?' <span class="pill no" title="최근 250봉 내 하루 ±50% 이상 점프: 분할/감자 등 수정주가 미반영 가능">의심</span>':''}</div><div style="font-size:11px;color:var(--muted)" class="num">${fmtPx(s)} <span class="${s.chg>=0?'up':'dn'}">${s.chg==null?'':(s.chg>=0?'+':'')+fmtN(s.chg,1)+'%'}</span></div>`;
+      if(k==='name') v = `<div>${s.name} <span style="color:var(--muted);font-size:11px">${s.ticker} · ${s.market}</span>${r.isNew?'<span class="new">NEW</span>':''}${s.rule_a?' <span class="pill ok" title="200일선 상승 & 50일선 -9% 이하 & RSI≤40 (과거 시장 환경 충족 국면에서 가장 크게 반등한 유형)">A</span>':''}${s.suspect?' <span class="pill no" title="최근 250봉 내 하루 ±50% 이상 점프: 분할/감자 등 수정주가 미반영 가능">의심</span>':''}</div><div style="font-size:11px;color:var(--muted)" class="num">${fmtPx(s)} <span class="${s.chg>=0?'up':'dn'}">${s.chg==null?'':(s.chg>=0?'+':'')+fmtN(s.chg,1)+'%'}</span>${s.partial?' <span title="장중 잠정값 (현재가 기준, 마감 후 확정)">⏱</span>':''}</div>`;
       else if(k==='marcap') v = fmtCap(s);
       else if(k==='streak') v = streakCell(mode, s);
       else if(k==='trend') v = trendText(s);
