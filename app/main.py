@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -292,6 +292,29 @@ def kis_balance():
         except Exception as e:  # noqa: BLE001
             out["errors"].append(f"{reg}: {e}")
     out["orders"] = kis.order_history(50)
+    return out
+
+
+@app.get("/api/kis/trades")
+def kis_trades(days: int = 30):
+    """한투 주문·체결 내역 (국내+미국, 최근 days일). 이 앱에서 보낸 주문은 app=True 로 표시."""
+    c = kis.client()
+    if not c.configured:
+        raise HTTPException(400, ".env 에 KIS 설정이 없습니다")
+    days = max(1, min(90, days))
+    end = datetime.now(scanner.KST)
+    start = (end - timedelta(days=days)).strftime("%Y%m%d")
+    out = {"mode": c.mode, "days": days, "rows": [], "errors": []}
+    for fn in (c.trades_kr, c.trades_us):
+        try:
+            out["rows"] += fn(start, end.strftime("%Y%m%d"))
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(str(e))
+    app_odno = {o.get("odno") for o in kis.order_history(1000) if o.get("odno")}
+    for r in out["rows"]:
+        r["app"] = r.get("odno") in app_odno or r.get("orgn_odno") in app_odno
+    out["rows"].sort(key=lambda r: (r["date"], r["time"]), reverse=True)
+    out["app_orders"] = kis.order_history(100)
     return out
 
 

@@ -106,6 +106,7 @@ textarea{width:100%;min-height:60px}
     <button data-tab="sell">매도 스캔</button>
     <button data-tab="report">리포트</button>
     <button data-tab="acct">계좌</button>
+    <button data-tab="trades">거래내역</button>
   </div>
 
   <!-- ===== 매수 ===== -->
@@ -164,8 +165,20 @@ textarea{width:100%;min-height:60px}
       <div class="filters" style="margin-top:6px"><div class="grp"><label>티커</label><input type="text" id="p_t" placeholder="AAPL / 005930" style="width:110px"></div><div class="grp"><label>매수일</label><input type="text" id="p_d" placeholder="2026-10-13" style="width:110px"></div><div class="grp"><label>매수가</label><input type="number" id="p_px" style="width:100px"></div><div class="grp"><label>수량</label><input type="number" id="p_q" style="width:70px"></div><button class="ghost" id="p_add">추가</button></div></details>
     <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">한투 잔고</h3>
     <div id="k_hold"></div>
-    <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">주문 기록 (이 앱에서 보낸 것)</h3>
-    <div id="k_orders"></div>
+  </section>
+
+  <!-- ===== 거래내역 ===== -->
+  <section class="panel" id="tab-trades">
+    <div class="filters">
+      <div class="grp"><label>기간</label><select id="tr_days"><option value="7">최근 7일</option><option value="30" selected>최근 30일</option><option value="90">최근 90일</option></select></div>
+      <div class="grp"><label>지역</label><select id="tr_reg"><option value="">전체</option><option value="US">미국</option><option value="KR">국내</option></select></div>
+      <div class="grp"><button class="ghost" id="tr_reload">새로고침</button></div>
+      <span id="tr_note" class="note" style="margin:0"></span>
+    </div>
+    <div class="gauges" id="tr_sum"></div>
+    <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">한투 주문·체결 내역 <span style="font-weight:400">(계좌 기준, 다른 곳에서 낸 주문 포함 · <span class="pill ok" style="font-size:10px">앱</span> = 이 화면에서 보낸 주문)</span></h3>
+    <div id="tr_table"></div>
+    <details style="margin:12px 0"><summary style="color:var(--muted);font-size:12px;cursor:pointer">이 앱에서 보낸 주문 기록 (로컬 로그)</summary><div id="k_orders" style="margin-top:6px"></div></details>
   </section>
 
   <!-- ===== 주문 초안 ===== -->
@@ -238,6 +251,7 @@ function openTab(name){
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='tab-'+name));
   if(name==='report') loadReport();
   if(name==='acct') loadAcct();
+  if(name==='trades') loadTrades();
   const want='#'+name+'/'+(MARKET||REGION); if(location.hash!==want) history.replaceState(null,'',want);
 }
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
@@ -717,10 +731,38 @@ async function loadAcct(){
     $('#k_hold').querySelectorAll('button.ord').forEach(b=>b.onclick=()=>orderDraft(b.dataset.t,'sell',+b.dataset.qty));
     $('#k_hold').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); openTab('buy'); showTicker(a.dataset.t,'b');});
   }
-  const od=ACCT.orders||[];
-  $('#k_orders').innerHTML = od.length ? '<table><thead><tr><th class="l">시각</th><th class="l">모드</th><th class="l">종목</th><th class="l">구분</th><th>수량</th><th>가격</th><th class="l">주문번호</th><th class="l">응답</th></tr></thead><tbody>'+od.map(o=>`<tr><td class="l">${o.at.replace('T',' ')}</td><td class="l">${o.mode}</td><td class="l">${o.ticker}</td><td class="l ${o.side==='buy'?'hit':'miss'}">${o.side==='buy'?'매수':'매도'}</td><td class="num">${o.qty}</td><td class="num">${fmtN(o.price,o.region==='KR'?0:2)}</td><td class="l">${o.odno||'-'}</td><td class="l" style="font-size:11px;color:var(--muted)">${o.msg||''}</td></tr>`).join('')+'</tbody></table>' : '<div class="note">아직 없음</div>';
 }
 $('#btnBal').onclick = loadAcct;
+async function loadTrades(){
+  await loadKisStatus();
+  if(!KIS_OK){ $('#tr_sum').innerHTML=''; $('#tr_table').innerHTML='<div class="empty">KIS 연결이 필요합니다 (.env).</div>'; return; }
+  $('#tr_table').innerHTML='<div class="note">조회 중…</div>';
+  let j; try{ j = await (await fetch('/api/kis/trades?days='+$('#tr_days').value)).json(); if(j.detail) throw new Error(j.detail); }catch(e){ $('#tr_table').innerHTML=`<div class="empty">조회 실패: ${e.message}</div>`; return; }
+  const reg=$('#tr_reg').value; const rows=j.rows.filter(r=>!reg||r.region===reg);
+  $('#tr_note').textContent = (j.mode==='real'?'실전':'모의투자')+' 계좌' + (j.errors.length?' · 오류: '+j.errors.join(' / '):'');
+  const stat=r=> r.rejected?['거부','no'] : r.cancelled?['취소','']: r.filled_qty>=r.ord_qty&&r.ord_qty>0?['체결','ok'] : r.filled_qty>0?[`부분 ${r.filled_qty}/${r.ord_qty}`,'warn'] : ['미체결','warn'];
+  const sum={US:{buy:0,sell:0,n:0},KR:{buy:0,sell:0,n:0}}; let open=0;
+  for(const r of rows){ const s=sum[r.region]; if(!s) continue; if(r.filled_qty>0){ s[r.side]+=r.amount; s.n++; } if(!r.cancelled&&!r.rejected&&r.remaining>0) open++; }
+  let g='';
+  if(!reg||reg==='US') g+=`<div class="g"><div class="t">미국 체결 (${sum.US.n}건)</div><div class="v">$${fmtN(sum.US.buy,0)}</div><div class="s">매수 $${fmtN(sum.US.buy,2)} · 매도 $${fmtN(sum.US.sell,2)}</div></div>`;
+  if(!reg||reg==='KR') g+=`<div class="g"><div class="t">국내 체결 (${sum.KR.n}건)</div><div class="v">${fmtN(sum.KR.buy,0)}원</div><div class="s">매수 ${fmtN(sum.KR.buy,0)}원 · 매도 ${fmtN(sum.KR.sell,0)}원</div></div>`;
+  g+=`<div class="g"><div class="t">미체결 주문</div><div class="v ${open?'dn':''}">${open}</div><div class="s">${open?'장중 체결 대기 또는 가격 미도달':'없음'}</div></div>`;
+  $('#tr_sum').innerHTML=g;
+  if(!rows.length){ $('#tr_table').innerHTML='<div class="empty">해당 기간에 주문이 없습니다.</div>'; }
+  else {
+    let h='<table><thead><tr><th class="l">일시</th><th class="l">종목</th><th class="l">구분</th><th>주문수량</th><th>주문가</th><th>체결수량</th><th>체결가</th><th>체결금액</th><th class="l">상태</th><th class="l">주문번호</th></tr></thead><tbody>';
+    for(const r of rows){ const d=r.region==='KR'?0:2, cur=r.region==='KR'?'원':'$', [st,cls]=stat(r);
+      const dt=`${r.date.slice(0,4)}-${r.date.slice(4,6)}-${r.date.slice(6,8)} ${r.time.slice(0,2)}:${r.time.slice(2,4)}:${r.time.slice(4,6)}`;
+      h+=`<tr><td class="l">${dt}</td><td class="l"><a href="#" class="tk" data-t="${r.ticker}">${r.name||r.ticker}</a> <span style="color:var(--muted);font-size:11px">${r.ticker}${r.excg?' · '+r.excg:''}</span>${r.app?' <span class="pill ok" style="font-size:10px">앱</span>':''}</td>
+        <td class="l ${r.side==='buy'?'hit':'miss'}">${r.side==='buy'?'매수':'매도'}</td><td class="num">${r.ord_qty}</td><td class="num">${r.ord_px?fmtN(r.ord_px,d):'-'}</td><td class="num">${r.filled_qty||'-'}</td><td class="num">${r.filled_px?fmtN(r.filled_px,d):'-'}</td><td class="num">${r.amount?(r.region==='KR'?fmtN(r.amount,0)+cur:cur+fmtN(r.amount,2)):'-'}</td>
+        <td class="l"><span class="pill ${cls}">${st}</span>${r.reject_reason?` <span style="font-size:11px;color:var(--muted)">${r.reject_reason}</span>`:''}</td><td class="l" style="font-size:11px;color:var(--muted)">${r.odno}${r.orgn_odno&&r.orgn_odno!=='0000000000'?'<br>원주문 '+r.orgn_odno:''}</td></tr>`; }
+    $('#tr_table').innerHTML=h+'</tbody></table>';
+    $('#tr_table').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); openTab('buy'); showTicker(a.dataset.t,'b');});
+  }
+  const od=j.app_orders||[];
+  $('#k_orders').innerHTML = od.length ? '<table><thead><tr><th class="l">시각</th><th class="l">모드</th><th class="l">종목</th><th class="l">구분</th><th>수량</th><th>가격</th><th class="l">주문번호</th><th class="l">응답</th></tr></thead><tbody>'+od.map(o=>`<tr><td class="l">${o.at.replace('T',' ')}</td><td class="l">${o.mode}</td><td class="l">${o.ticker}</td><td class="l ${o.side==='buy'?'hit':'miss'}">${o.side==='buy'?'매수':'매도'}</td><td class="num">${o.qty}</td><td class="num">${fmtN(o.price,o.region==='KR'?0:2)}</td><td class="l">${o.odno||'<span class="miss">없음</span>'}</td><td class="l" style="font-size:11px;color:var(--muted)">${o.msg||''}</td></tr>`).join('')+'</tbody></table>' : '<div class="note">아직 없음</div>';
+}
+$('#tr_reload').onclick=loadTrades; $('#tr_days').onchange=loadTrades; $('#tr_reg').onchange=loadTrades;
 function exitQuery(){ return new URLSearchParams({rsi_d_min:$('#x_rd').value, rsi_w_lo:$('#x_rwlo').value, rsi_w_hi:$('#x_rwhi').value, arm_us:$('#x_arm_us').value, trail_us:$('#x_tr_us').value, arm_kr:$('#x_arm_kr').value, trail_kr:$('#x_tr_kr').value, max_hold:$('#x_max').value}); }
 async function loadExits(){
   $('#k_pos').innerHTML='<div class="note">판정 중…</div>';
@@ -765,7 +807,7 @@ async function orderDraft(t, side, qtyHint){
   $('#od_ok').onclick = async ()=>{ $('#od_ok').disabled=true;
     try{ const r = await fetch('/api/kis/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:t, side, qty:+$('#od_qty').value, price:+$('#od_px').value})}); const j=await r.json();
       if(!r.ok) throw new Error(j.detail||'실패');
-      $('#od_body').innerHTML = `<span class="hit">주문 접수</span> 주문번호 ${j.odno||'-'} · ${j.msg||''}`; $('#od_ok').style.display='none'; $('#od_cancel').textContent='닫기'; loadAcct();
+      $('#od_body').innerHTML = `<span class="hit">주문 접수</span> 주문번호 ${j.odno||'-'} · ${j.msg||''}`; $('#od_ok').style.display='none'; $('#od_cancel').textContent='닫기'; loadAcct(); if(document.querySelector('#tab-trades.on')) loadTrades();
     }catch(e){ $('#od_body').innerHTML += `<br><span class="miss">주문 실패: ${e.message}</span>`; $('#od_ok').disabled=false; } };
 }
 $('#od_cancel').onclick=()=>{ $('#odlg').style.display='none'; $('#od_ok').style.display=''; $('#od_cancel').textContent='취소'; };
