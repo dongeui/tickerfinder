@@ -475,7 +475,7 @@ function evalRows(mode){
 
 // ---------- 테이블 ----------
 const COLS = {
-  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['streak','체류','l'],['prob','추천확률 (시장환경 포함 / 종목만)'],['exp','기대수익 20일 / 60일']],
+  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['streak','체류','l'],['prob','추천확률 (시장환경 포함 / 종목만)'],['exp','기대수익 20일 / 60일']],
   sell:[['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['rsi','일RSI / 주RSI'],['streak','체류','l']],
 };
 function fmtCap(s){ if(s.marcap==null) return '-'; if(s.region==='KR'){ const j=s.marcap/1e12; return j>=1 ? fmtN(j,j>=10?0:1)+'조' : fmtN(s.marcap/1e8,0)+'억'; } const b=s.marcap/1e9; return b>=1000 ? '$'+fmtN(b/1000,2)+'T' : '$'+fmtN(b,0)+'B'; }
@@ -485,6 +485,12 @@ function sparkline(t){
   const x=i=>2+(W-4)*i/(n-1), y=v=>2+(H-4)*(1-(v-mn)/((mx-mn)||1));
   const col = c[n-1]>=c[0] ? '#2ecc8a' : '#ff5c7a';
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="vertical-align:middle;margin-right:6px"><polyline fill="none" stroke="${col}" stroke-width="1.3" points="${c.map((v,i)=>x(i)+','+y(v)).join(' ')}"/><circle cx="${x(n-1)}" cy="${y(c[n-1])}" r="2" fill="${col}"/></svg>`;
+}
+// 200일선 20일 기울기(%). 20년 백테스트(scripts/trend_vs_prob.py) 3분위: 상위 ≥ +2.1%, 하위 < +0.9%. 상위가 하위보다 60일 평균 +3~6%p, 180일 +6~10%p (같은 추천확률 구간에서도).
+function slopeCell(s){
+  const v=s.ma_slope200; if(v==null) return '-';
+  const [lab,cls] = v>=2.1?['상위','up']:v>=0.9?['중위','']:['하위','dn'];
+  return `<span class="${cls}" style="font-weight:600">${v>=0?'+':''}${fmtN(v,1)}%</span> <span class="pill ${cls==='up'?'ok':cls==='dn'?'no':''}" style="font-size:10px" title="20년 백테스트 3분위: 상위 ≥+2.1% / 하위 <+0.9%. 상위가 하위보다 60일 평균 +3~6%p, 180일 +6~10%p 높음 (같은 추천확률에서도)">${lab}</span>`;
 }
 function trendText(s){
   const sl=s.ma_slope200, h=s.from_high52, r1=s.ret_1m;
@@ -514,10 +520,6 @@ function expCell(s){
   const f = v => v==null ? '-' : `<span class="${v>=0?'up':'dn'}">${v>=0?'+':''}${fmtN(v,1)}%</span>`;
   return `${f(b.med20)} <span style="color:var(--muted)">/</span> ${f(b.med60)}`;
 }
-function links(s){
-  if(s.region==='KR') return `<a href="https://finance.naver.com/item/fchart.naver?code=${s.ticker}" target="_blank">네이버</a><a href="https://www.tradingview.com/chart/?symbol=KRX:${s.ticker}" target="_blank">TV</a>`;
-  return `<a href="https://finance.yahoo.com/quote/${s.ticker}" target="_blank">야후</a><a href="https://www.tradingview.com/chart/?symbol=${s.ticker}" target="_blank">TV</a>`;
-}
 function cellClass(mode, s, key){
   const v = s[key]; if(v==null) return '';
   if(mode==='buy'){
@@ -533,7 +535,7 @@ function cellClass(mode, s, key){
 function renderTable(mode){
   const rows = evalRows(mode); const p = mode==='buy'?'b':'s'; const near = +$('#'+p+'_near').value;
   const key = sortKey[mode], dir = sortDir[mode];
-  const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : key==='trend' ? r.s.ma_slope200 : key==='prob' ? (BT?.tickers?.[r.s.ticker]?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
+  const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='prob' ? (BT?.tickers?.[r.s.ticker]?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
   rows.sort((a,b)=>{ if(a.miss!==b.miss) return a.miss-b.miss; const x=val(a), y=val(b); if(x==null) return 1; if(y==null) return -1; return (x>y?1:x<y?-1:0)*dir; });
   const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length;
   $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목</span><span>신규 진입 <b>${newN}</b></span><span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
@@ -541,7 +543,7 @@ function renderTable(mode){
     $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. <b>추천확률</b>은 두 값입니다. 앞은 그 종목의 과거(약 20년) 동안 "시장 환경 + 종목 조건"이 함께 성립한 날 샀을 때, 뒤는 시장 환경을 무시하고 종목 조건만 맞은 날 샀을 때의 값이고, 각각 20/60/90/180/360일 뒤 올라 있었는지(승률)와 구간 안에 +10% 반등이 있었는지(반등확률)를 합친 값이고, 표본이 적은 종목은 지역 평균 쪽으로 보정됩니다. 두 값이 비슷하면 시장과 상관없이 눌림마다 반등해 온 종목(강한 추세주)이고, 앞 값만 높으면 시장 공포 국면에서만 잘 반등한 종목입니다. 종목을 클릭하면 구간별 상세와 과거 진입 기록이 보입니다.'; }
   if(!rows.length){ $('#'+p+'_table').innerHTML='<div class="empty">조건을 만족하는 종목이 없습니다.</div>' + renderExits(mode); return; }
   const cols = COLS[mode];
-  let h = '<table><thead><tr>' + cols.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (mode==='buy'?'<th>시장</th>':'') + (near?'<th>충족</th>':'') + '<th>링크</th></tr></thead><tbody>';
+  let h = '<table><thead><tr>' + cols.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (mode==='buy'?'<th>시장</th>':'') + (near?'<th>충족</th>':'') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
   for(const r of rows){ const s=r.s;
     h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 추세·체류·장기 확률 상세">` + cols.map(([k,n,l])=>{
       let v;
@@ -549,12 +551,13 @@ function renderTable(mode){
       else if(k==='marcap') v = fmtCap(s);
       else if(k==='streak') v = streakCell(mode, s);
       else if(k==='trend') v = trendText(s);
+      else if(k==='slope') v = slopeCell(s);
       else if(k==='prob') v = probCell(s);
       else if(k==='exp') v = expCell(s);
       else if(k==='rsi') v = `<span class="${cellClass('sell',s,'rsi_d')}">${fmtN(s.rsi_d,0)}</span> <span style="color:var(--muted)">/</span> <span class="${cellClass('sell',s,'rsi_w')}">${fmtN(s.rsi_w,0)}</span>`;
       else v = fmtN(s[k],1);
       return `<td class="${l||'num'}">${v}</td>`; }).join('')
-      + (mode==='buy'?`<td><span class="pill ${r.gate?'ok':'no'}">${r.gate?'✓':'-'}</span></td>`:'') + (near?`<td class="${r.miss?'miss':'hit'}">${r.conds.length-r.miss}/${r.conds.length}</td>`:'') + `<td class="links">${links(s)}${KIS_OK?` <button class="ghost ord" data-t="${s.ticker}" data-side="${mode==='buy'?'buy':'sell'}" style="padding:2px 8px;font-size:11px;margin-left:6px">${mode==='buy'?'매수':'매도'}</button>`:''}</td></tr>`;
+      + (mode==='buy'?`<td><span class="pill ${r.gate?'ok':'no'}">${r.gate?'✓':'-'}</span></td>`:'') + (near?`<td class="${r.miss?'miss':'hit'}">${r.conds.length-r.miss}/${r.conds.length}</td>`:'') + (KIS_OK?`<td><button class="ghost ord" data-t="${s.ticker}" data-side="${mode==='buy'?'buy':'sell'}" style="padding:2px 8px;font-size:11px">${mode==='buy'?'매수':'매도'}</button></td>`:'') + `</tr>`;
   }
   $('#'+p+'_table').innerHTML = h + '</tbody></table>' + renderExits(mode);
   $('#'+p+'_table').querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; if(sortKey[mode]===k) sortDir[mode]*=-1; else {sortKey[mode]=k; sortDir[mode]=1;} renderTable(mode); });
