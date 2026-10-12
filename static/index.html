@@ -28,6 +28,10 @@ main{padding:12px 16px;max-width:1500px;margin:0 auto}
 .g.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}
 .g.sel .t::before{content:'▶ ';color:var(--acc)}
 .g.ok .v{color:var(--buy)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-right:8px}
+.seg button{background:var(--panel2);color:var(--muted);border:0;border-radius:0;padding:6px 14px;font-weight:600}
+.seg button.on{background:var(--acc);color:#fff}
+.banner{background:#2a2415;border:1px solid var(--warn);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--fg);margin-bottom:10px}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
 .pill.ok{color:var(--buy);border-color:var(--buy)}
 .pill.no{color:var(--sell);border-color:var(--sell)}
@@ -70,6 +74,7 @@ textarea{width:100%;min-height:60px}
 <body>
 <header>
   <h1>Ticker Finder</h1>
+  <div class="seg" id="regionSeg" title="미국과 국내는 조건·확률·매도 규칙이 다르게 검증되어 따로 봅니다"><button data-r="US">미국</button><button data-r="KR">국내</button></div>
   <button id="btnScan">스캔 실행</button>
   <div class="status">
     <span id="stStage">-</span>
@@ -86,12 +91,13 @@ textarea{width:100%;min-height:60px}
   <div class="filters" id="fGate" style="margin-bottom:10px">
     <div class="grp"><label style="color:var(--fg);font-weight:600">매수 환경 기준</label></div>
     <div class="grp"><label>지수 RSI(14) ≤</label><input type="number" id="b_mkt_hi" value="40"><input type="hidden" id="b_mkt_lo" value="0"></div>
-    <div class="grp"><label><input type="checkbox" id="b_mkt_kr" checked> 국내 종목은 코스피 RSI로 판정 (미국은 나스닥)</label></div>
+    <div class="grp" id="wrap_mkt_kr"><label><input type="checkbox" id="b_mkt_kr" checked> 국내 종목은 코스피 RSI로 판정 (끄면 전일 나스닥)</label></div>
     <div class="grp"><label><input type="checkbox" id="b_mkt_on"> 미충족이면 매수 탭 결과 숨김</label></div>
     <div class="grp"><label>확률 계산 매수 시점</label><select id="b_entry"><option value="next_open">신호 다음날 시가</option><option value="close">신호일 종가 (이론값)</option></select></div>
     <div class="grp"><span class="note" style="margin:0">카드의 충족 표시, 매수 탭의 시장 열, 리포트의 시장 환경 통계가 모두 이 기준으로 계산됩니다.</span></div>
   </div>
   <div class="gauges" id="gauges"></div>
+  <div class="banner" id="krBanner" style="display:none"><b>국내는 관찰용입니다.</b> 20년 검증에서 이 매수 조건은 국내에서 우위가 없었습니다 (60일 승률 50%, 하위 10% -23~-36%). 매매 규칙은 미국 기준으로만 운용하고, 국내 탭은 조건 실험과 보유 종목 과열 경고 용도로 쓰세요.</div>
 
   <div class="tabs">
     <button data-tab="buy" class="on">매수 스캔</button>
@@ -104,8 +110,8 @@ textarea{width:100%;min-height:60px}
   <section class="panel on" id="tab-buy">
     <div class="filters" id="fBuy">
       <div class="grp cond"><input type="checkbox" id="b_st_on" checked><label>슬로우스토캐스틱 %K ≤</label><input type="number" id="b_st_max" value="25">
-        <label>국내</label><select id="b_st_tf_kr"><option value="d">일봉</option><option value="w">주봉</option></select>
-        <label>미국</label><select id="b_st_tf_us"><option value="d">일봉</option><option value="w" selected>주봉</option></select></div>
+        <span id="wrap_tf_kr"><label>국내</label><select id="b_st_tf_kr"><option value="d">일봉</option><option value="w">주봉</option></select></span>
+        <span id="wrap_tf_us"><label>미국</label><select id="b_st_tf_us"><option value="d">일봉</option><option value="w" selected>주봉</option></select></span></div>
       <div class="grp cond"><input type="checkbox" id="b_ma_on" checked><label>150~200일선 밴드 ±</label><input type="number" id="b_ma_tol" value="3" step="0.5">%</div>
       <div class="grp"><label>표시</label><select id="b_near"><option value="0">전부 충족</option><option value="1">1개 미충족까지</option></select></div>
     </div>
@@ -199,6 +205,8 @@ const fmtPx = (s) => s.region==='KR' ? fmtN(s.close,0) : fmtN(s.close,2);
 const fmtTo = (s) => s.turnover20==null ? '-' : s.region==='KR' ? fmtN(s.turnover20/1e8,0)+'억' : '$'+fmtN(s.turnover20/1e6,0)+'M';
 const cls = (v, hit) => v==null ? '' : (hit ? 'hit' : '');
 let MARKET = null; try{ MARKET = localStorage.getItem('tf_market')||null; }catch(_){}
+let REGION = 'US'; try{ REGION = localStorage.getItem('tf_region')||'US'; }catch(_){}
+const MKT_REGION = {IXIC:'US', GSPC:'US', KS11:'KR', KQ11:'KR'};
 let STREAK = {buy:{}, sell:{}};
 let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null, RSID = null; const TFN = {d:'일봉', w:'주봉', m:'월봉'};
 let DATA = null, WATCH = [], sortKey = {buy:'prob', sell:'rsi_d'}, sortDir = {buy:-1, sell:-1};
@@ -228,7 +236,7 @@ function openTab(name){
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='tab-'+name));
   if(name==='report') loadReport();
   if(name==='acct') loadAcct();
-  const want='#'+name+(MARKET?'/'+MARKET:''); if(location.hash!==want) history.replaceState(null,'',want);
+  const want='#'+name+'/'+(MARKET||REGION); if(location.hash!==want) history.replaceState(null,'',want);
 }
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 
@@ -295,6 +303,24 @@ $('#btnWatchSave').onclick = async ()=>{
   $('#watchText').value = WATCH.join(' '); render();
 };
 
+// ---------- 지역 전환 (미국 / 국내) ----------
+function setRegion(r){
+  REGION = r; try{ localStorage.setItem('tf_region', r); }catch(_){}
+  if(MARKET && MKT_REGION[MARKET] !== r){ MARKET = null; try{ localStorage.removeItem('tf_market'); }catch(_){} }
+  syncRegionUI(); render();
+  const rr = $('#r_region'); if(rr && rr.value !== r){ rr.value = r; if(REV) renderEvents(); }
+}
+function syncRegionUI(){
+  document.querySelectorAll('#regionSeg button').forEach(b=>b.classList.toggle('on', b.dataset.r===REGION));
+  $('#krBanner').style.display = REGION==='KR' ? '' : 'none';
+  $('#wrap_tf_kr').style.display = REGION==='KR' ? '' : 'none';
+  $('#wrap_tf_us').style.display = REGION==='US' ? '' : 'none';
+  $('#wrap_mkt_kr').style.display = REGION==='KR' ? '' : 'none';
+  document.title = (REGION==='US' ? '미국 · ' : '국내 · ') + 'Ticker Finder';
+}
+document.querySelectorAll('#regionSeg button').forEach(b=>b.onclick=()=>setRegion(b.dataset.r));
+syncRegionUI();
+
 // ---------- 시장 선택 (카드 클릭) ----------
 const MKT_NAMES = {IXIC:'나스닥100', GSPC:'S&P500', KS11:'코스피', KQ11:'코스닥'};
 function inMarket(s, m){
@@ -320,14 +346,18 @@ function renderGauges(){
       <div class="s">스토캐 %K ${fmtN(x.stoch_k,1)} · 주봉 RSI ${fmtN(x.rsi_w,1)} · 종가 ${fmtN(x.close,0)} ${x.chg==null?'':`<span class="${x.chg>=0?'up':'dn'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`}${extra}</div></div>` : '';
   const gap = (a,b) => (a&&b&&a.rsi_d!=null&&b.rsi_d!=null) ? `<div style="margin-top:4px"><span class="pill">나스닥 RSI와 차이 ${(a.rsi_d-b.rsi_d)>=0?'+':''}${fmtN(a.rsi_d-b.rsi_d,1)}</span></div>` : '';
   let h = rsiDistCard();
-  h += card('나스닥 RSI(14)', I.IXIC, `<div style="margin-top:4px"><span class="pill ${ok?'ok':'no'}">매수 환경 ${ok?'충족':'미충족'} (RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, ok?'ok':'', 'IXIC');
-  h += card('S&P500 RSI(14)', I.GSPC, '', '', 'GSPC');
-  h += card('코스피 RSI(14)', I.KS11, $('#b_mkt_kr').checked ? `<div style="margin-top:4px"><span class="pill ${okK?'ok':'no'}">국내 매수 환경 ${okK?'충족':'미충족'}</span></div>` : '', ($('#b_mkt_kr').checked&&okK)?'ok':'', 'KS11');
-  h += card('코스닥 RSI(14)', I.KQ11, '', '', 'KQ11');
-  if(I.USDKRW){ const x=I.USDKRW; h += `<div class="g"><div class="t">원/달러 환율 <span style="float:right">${x.date||''}</span></div><div class="v">${fmtN(x.close,1)}</div>
+  if(REGION==='US'){
+    h += card('나스닥 RSI(14)', I.IXIC, `<div style="margin-top:4px"><span class="pill ${ok?'ok':'no'}">매수 환경 ${ok?'충족':'미충족'} (RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, ok?'ok':'', 'IXIC');
+    h += card('S&P500 RSI(14)', I.GSPC, '', '', 'GSPC');
+  } else {
+    h += card('코스피 RSI(14)', I.KS11, `<div style="margin-top:4px"><span class="pill ${okK?'ok':'no'}">국내 매수 환경 ${okK?'충족':'미충족'} (${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, okK?'ok':'', 'KS11');
+    h += card('코스닥 RSI(14)', I.KQ11, '', '', 'KQ11');
+    h += card('나스닥 RSI(14) (참고)', I.IXIC, '', '', null);
+  }
+  if(I.USDKRW && REGION==='US'){ const x=I.USDKRW; h += `<div class="g"><div class="t">원/달러 환율 <span style="float:right">${x.date||''}</span></div><div class="v">${fmtN(x.close,1)}</div>
       <div class="s">${x.chg==null?'':`<span class="${x.chg>=0?'dn':'up'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`} · RSI ${fmtN(x.rsi_d,1)} · 1M ${x.ret_1m==null?'-':(x.ret_1m>=0?'+':'')+fmtN(x.ret_1m,1)+'%'} · 200일선 대비 ${x.band_pos==null?'-':(x.band_pos>=0?'+':'')+fmtN(x.band_pos,1)+'%'}<div style="margin-top:4px;color:var(--muted)">환율이 높을수록(원화 약세) 반등 시 환차손 위험 → 환헤지 유리</div></div></div>`; }
-  if(I.NDX_KR){ h += card('TIGER 미국나스닥100 (국내상장·환노출)', I.NDX_KR, gap(I.NDX_KR, I.IXIC)); }
-  if(I.SPX_KR){ h += card('TIGER 미국S&P500 (국내상장·환노출)', I.SPX_KR, gap(I.SPX_KR, I.GSPC).replace('나스닥 RSI','S&P500 RSI')); }
+  if(I.NDX_KR && REGION==='US'){ h += card('TIGER 미국나스닥100 (국내상장·환노출)', I.NDX_KR, gap(I.NDX_KR, I.IXIC)); }
+  if(I.SPX_KR && REGION==='US'){ h += card('TIGER 미국S&P500 (국내상장·환노출)', I.SPX_KR, gap(I.SPX_KR, I.GSPC).replace('나스닥 RSI','S&P500 RSI')); }
   $('#gauges').innerHTML = h;
   $('#gauges').querySelectorAll('.g.click').forEach(g=>g.onclick=()=>setMarket(g.dataset.mkt));
   ['b','s'].forEach(p=>{ $('#'+p+'_mkt_label').textContent = MARKET ? MKT_NAMES[MARKET] : '전체'; $('#'+p+'_mkt_label').className = 'pill '+(MARKET?'ok':''); $('#'+p+'_mkt_clear').style.display = MARKET?'':'none'; });
@@ -360,6 +390,7 @@ function rsiDistCard(){
 
 // ---------- 조건 평가 ----------
 function commonPass(s, p){
+  if(s.region !== REGION) return false;
   if(s.suspect && !$('#'+p+'_suspect').checked) return false;
   if(!inMarket(s, MARKET)) return false;
   const to = s.turnover20||0;
@@ -468,10 +499,10 @@ function renderTable(mode){
   const key = sortKey[mode], dir = sortDir[mode];
   const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : key==='trend' ? r.s.ma_slope200 : key==='prob' ? (BT?.tickers?.[r.s.ticker]?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
   rows.sort((a,b)=>{ if(a.miss!==b.miss) return a.miss-b.miss; const x=val(a), y=val(b); if(x==null) return 1; if(y==null) return -1; return (x>y?1:x<y?-1:0)*dir; });
-  const total = DATA.stocks.filter(x=>inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length;
+  const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length;
   $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목</span><span>신규 진입 <b>${newN}</b></span><span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
   if(mode==='buy'){ const ok=mktOK('US'), okK=mktOK('KR'); const ixr=DATA.indices?.IXIC?.rsi_d, ksr=DATA.indices?.KS11?.rsi_d;
-    $('#b_note').innerHTML = `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` + ($('#b_mkt_kr').checked ? ` · 코스피 RSI <b>${fmtN(ksr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'국내 충족':'국내 미충족'}</span>` : '') + ' — 종목 조건 충족 종목입니다. <b>추천확률</b>은 두 값입니다. 앞은 그 종목의 과거(약 20년) 동안 "시장 환경 + 종목 조건"이 함께 성립한 날 샀을 때, 뒤는 시장 환경을 무시하고 종목 조건만 맞은 날 샀을 때의 값이고, 각각 20/60/90/180/360일 뒤 올라 있었는지(승률)와 구간 안에 +10% 반등이 있었는지(반등확률)를 합친 값이고, 표본이 적은 종목은 지역 평균 쪽으로 보정됩니다. 두 값이 비슷하면 시장과 상관없이 눌림마다 반등해 온 종목(강한 추세주)이고, 앞 값만 높으면 시장 공포 국면에서만 잘 반등한 종목입니다. 종목을 클릭하면 구간별 상세와 과거 진입 기록이 보입니다.'; }
+    $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. <b>추천확률</b>은 두 값입니다. 앞은 그 종목의 과거(약 20년) 동안 "시장 환경 + 종목 조건"이 함께 성립한 날 샀을 때, 뒤는 시장 환경을 무시하고 종목 조건만 맞은 날 샀을 때의 값이고, 각각 20/60/90/180/360일 뒤 올라 있었는지(승률)와 구간 안에 +10% 반등이 있었는지(반등확률)를 합친 값이고, 표본이 적은 종목은 지역 평균 쪽으로 보정됩니다. 두 값이 비슷하면 시장과 상관없이 눌림마다 반등해 온 종목(강한 추세주)이고, 앞 값만 높으면 시장 공포 국면에서만 잘 반등한 종목입니다. 종목을 클릭하면 구간별 상세와 과거 진입 기록이 보입니다.'; }
   if(!rows.length){ $('#'+p+'_table').innerHTML='<div class="empty">조건을 만족하는 종목이 없습니다.</div>' + renderExits(mode); return; }
   const cols = COLS[mode];
   let h = '<table><thead><tr>' + cols.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (mode==='buy'?'<th>시장</th>':'') + (near?'<th>충족</th>':'') + '<th>링크</th></tr></thead><tbody>';
@@ -497,7 +528,7 @@ function renderTable(mode){
 }
 function renderExits(mode){
   const byT = Object.fromEntries(DATA.stocks.map(x=>[x.ticker,x]));
-  const ex = Object.entries(STREAK[mode]).filter(([t,st])=>st.exited && byT[t] && inMarket(byT[t], MARKET) && !byT[t].suspect).map(([t,st])=>({s:byT[t], st}));
+  const ex = Object.entries(STREAK[mode]).filter(([t,st])=>st.exited && byT[t] && byT[t].region===REGION && inMarket(byT[t], MARKET) && !byT[t].suspect).map(([t,st])=>({s:byT[t], st}));
   ex.sort((a,b)=>b.st.prev_streak-a.st.prev_streak);
   if(!ex.length) return '';
   let h = `<div class="note" style="margin-top:14px"><b style="color:var(--fg)">오늘 이탈 ${ex.length}</b> — 어제까지 ${mode==='buy'?'매수':'매도'} 조건 안에 있다가 최신 봉에서 빠진 종목 (며칠 있었는지 / 이탈일 등락)</div><div style="display:flex;flex-wrap:wrap;gap:6px">`;
@@ -520,6 +551,7 @@ let RH = null, REV = null;
 function thQuery(extra){ return new URLSearchParams({stoch_max:$('#b_st_max').value, stoch_tf_kr:$('#b_st_tf_kr').value, stoch_tf_us:$('#b_st_tf_us').value, band_tol:$('#b_ma_tol').value, mkt_lo:$('#b_mkt_lo').value, mkt_hi:$('#b_mkt_hi').value,
     rsi_d_min:$('#s_rd_min').value, rsi_w_lo:$('#s_rw_lo').value, rsi_w_hi:$('#s_rw_hi').value, ...extra}); }
 async function loadReport(){
+  if(!$('#r_region').dataset.init){ $('#r_region').value = REGION; $('#r_region').dataset.init='1'; }
   RH = (await (await fetch('/api/history?'+thQuery({limit:'400'}))).json()).days;
   const ix = RH.map(d=>[d.date, d.indices.IXIC?.rsi_d]).filter(p=>p[1]!=null), ks = RH.map(d=>[d.date, d.indices.KS11?.rsi_d]).filter(p=>p[1]!=null);
   $('#chIdx').innerHTML = RH.length ? lineChart([{name:'나스닥',color:'#4f8cff',pts:ix},{name:'코스피',color:'#f5b84f',pts:ks}], +$('#b_mkt_lo').value, +$('#b_mkt_hi').value) : '<div class="note">데이터 없음</div>';
@@ -725,7 +757,7 @@ async function orderDraft(t, side, qtyHint){
 $('#od_cancel').onclick=()=>{ $('#odlg').style.display='none'; $('#od_ok').style.display=''; $('#od_cancel').textContent='취소'; };
 loadKisStatus().then(()=>render());
 
-function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; try{localStorage.setItem('tf_market',m)}catch(_){} } render(); if(['buy','sell','report','acct'].includes(t)) openTab(t); }
+function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && (m==='US'||m==='KR') && REGION!==m){ REGION=m; try{localStorage.setItem('tf_region',m)}catch(_){} syncRegionUI(); } else if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; REGION=MKT_REGION[m]; try{localStorage.setItem('tf_market',m); localStorage.setItem('tf_region',REGION)}catch(_){} syncRegionUI(); } render(); if(['buy','sell','report','acct'].includes(t)) openTab(t); }
 loadWatch(); loadRsiDist(); loadResults().finally(()=>{ pollStatus(); applyHash(); });
 window.addEventListener('hashchange', applyHash);
 </script>
