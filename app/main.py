@@ -225,6 +225,25 @@ def backtest_summary(
     return {"ready": True, **backtest.compact(res)}
 
 
+_PM: dict = {"mtime": None, "data": None}
+
+
+@app.get("/api/prob_model")
+def prob_model():
+    """보수적 추천확률 모델 (scripts/pit_prob.py 가 만든 data/prob_model.json). 없으면 404."""
+    path = DATA_DIR / "prob_model.json"
+    if not path.exists():
+        raise HTTPException(404, "data/prob_model.json 없음 — `uv run python scripts/pit_prob.py` 로 생성")
+    m = path.stat().st_mtime
+    if _PM["mtime"] != m:
+        try:
+            _PM.update(mtime=m, data=json.loads(path.read_text()))
+        except (json.JSONDecodeError, OSError) as e:  # 스크립트가 쓰는 중이면 직전 정상본 유지
+            if _PM["data"] is None:
+                raise HTTPException(503, f"prob_model.json 읽기 실패: {e}")
+    return _PM["data"]
+
+
 @app.get("/api/backtest/{ticker}")
 def backtest_ticker(
     ticker: str, use_kr_index: bool = True, stoch_tf_kr: str = "d", stoch_tf_us: str = "w", entry: str = "next_open",
