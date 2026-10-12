@@ -200,7 +200,7 @@ const fmtTo = (s) => s.turnover20==null ? '-' : s.region==='KR' ? fmtN(s.turnove
 const cls = (v, hit) => v==null ? '' : (hit ? 'hit' : '');
 let MARKET = null; try{ MARKET = localStorage.getItem('tf_market')||null; }catch(_){}
 let STREAK = {buy:{}, sell:{}};
-let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null; const TFN = {d:'일봉', w:'주봉', m:'월봉'};
+let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null, RSID = null; const TFN = {d:'일봉', w:'주봉', m:'월봉'};
 let DATA = null, WATCH = [], sortKey = {buy:'prob', sell:'rsi_d'}, sortDir = {buy:-1, sell:-1};
 
 // ---------- 공통 필터 (지역, 거래대금, 검색) ----------
@@ -319,7 +319,8 @@ function renderGauges(){
   const card = (n, x, extra='', cls='', key=null) => x ? `<div class="g ${cls} ${key?'click':''} ${key&&MARKET===key?'sel':''}" ${key?`data-mkt="${key}" title="클릭하면 아래 표를 이 시장 종목으로 좁힙니다"`:''}><div class="t">${n} <span style="float:right">${x.date||''}</span></div><div class="v">${fmtN(x.rsi_d,1)}</div>
       <div class="s">스토캐 %K ${fmtN(x.stoch_k,1)} · 주봉 RSI ${fmtN(x.rsi_w,1)} · 종가 ${fmtN(x.close,0)} ${x.chg==null?'':`<span class="${x.chg>=0?'up':'dn'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`}${extra}</div></div>` : '';
   const gap = (a,b) => (a&&b&&a.rsi_d!=null&&b.rsi_d!=null) ? `<div style="margin-top:4px"><span class="pill">나스닥 RSI와 차이 ${(a.rsi_d-b.rsi_d)>=0?'+':''}${fmtN(a.rsi_d-b.rsi_d,1)}</span></div>` : '';
-  let h = card('나스닥 RSI(14)', I.IXIC, `<div style="margin-top:4px"><span class="pill ${ok?'ok':'no'}">매수 환경 ${ok?'충족':'미충족'} (RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, ok?'ok':'', 'IXIC');
+  let h = rsiDistCard();
+  h += card('나스닥 RSI(14)', I.IXIC, `<div style="margin-top:4px"><span class="pill ${ok?'ok':'no'}">매수 환경 ${ok?'충족':'미충족'} (RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, ok?'ok':'', 'IXIC');
   h += card('S&P500 RSI(14)', I.GSPC, '', '', 'GSPC');
   h += card('코스피 RSI(14)', I.KS11, $('#b_mkt_kr').checked ? `<div style="margin-top:4px"><span class="pill ${okK?'ok':'no'}">국내 매수 환경 ${okK?'충족':'미충족'}</span></div>` : '', ($('#b_mkt_kr').checked&&okK)?'ok':'', 'KS11');
   h += card('코스닥 RSI(14)', I.KQ11, '', '', 'KQ11');
@@ -330,6 +331,31 @@ function renderGauges(){
   $('#gauges').innerHTML = h;
   $('#gauges').querySelectorAll('.g.click').forEach(g=>g.onclick=()=>setMarket(g.dataset.mkt));
   ['b','s'].forEach(p=>{ $('#'+p+'_mkt_label').textContent = MARKET ? MKT_NAMES[MARKET] : '전체'; $('#'+p+'_mkt_label').className = 'pill '+(MARKET?'ok':''); $('#'+p+'_mkt_clear').style.display = MARKET?'':'none'; });
+}
+
+// ---------- 지수 RSI 장기 분포 카드 ----------
+async function loadRsiDist(){ try{ RSID = await (await fetch('/api/rsi_dist')).json(); render(); }catch(e){} }
+function rsiDistCard(){
+  if(!RSID || !RSID.IXIC) return '';
+  const hi = +$('#b_mkt_hi').value;
+  const row = (name, d) => {
+    if(!d) return '';
+    const W=150, x=v=>Math.round(W*v/100);
+    const bar = `<svg width="${W}" height="14" viewBox="0 0 ${W} 14" style="display:block;margin:3px 0 1px">
+      <rect x="0" y="5" width="${W}" height="4" fill="#2a2f3a"/>
+      <rect x="${x(d.pct['10'])}" y="5" width="${x(d.pct['90'])-x(d.pct['10'])}" height="4" fill="#3a4152"/>
+      <rect x="${x(d.pct['25'])}" y="5" width="${x(d.pct['75'])-x(d.pct['25'])}" height="4" fill="#55607a"/>
+      <rect x="0" y="5" width="${x(hi)}" height="4" fill="#2ecc8a" opacity=".45"/>
+      <line x1="${x(d.median)}" x2="${x(d.median)}" y1="2" y2="12" stroke="#8b93a7" stroke-width="1"/>
+      <circle cx="${x(d.cur)}" cy="7" r="3.5" fill="${d.cur<=hi?'#2ecc8a':'#e6e8ee'}"/></svg>`;
+    return `<div style="margin-top:5px"><div style="display:flex;justify-content:space-between"><span>${name}</span><span class="num">현재 <b>${fmtN(d.cur,0)}</b> <span style="color:var(--muted)">(하위 ${fmtN(d.cur_pctile,0)}%)</span></span></div>${bar}
+      <div style="color:var(--muted);font-size:11px">평균 ${fmtN(d.mean,0)} · 중앙 ${fmtN(d.median,0)} · ±${fmtN(d.std,0)} · ≤${hi}는 ${fmtN(d.le[String(hi)]??d.le['40'],0)}% · ≤30은 ${fmtN(d.le['30'],1)}% · ≥70은 ${fmtN(d.ge['70'],0)}%</div></div>`;
+  };
+  const yrs = RSID.IXIC.year_mean; const ys = Object.keys(yrs).slice(-8);
+  return `<div class="g" style="grid-column:span 2" title="20년 일봉 RSI(14) 분포. 막대: 진한 구간=25~75%, 연한 구간=10~90%, 세로선=중앙값, 초록 음영=매수 환경(≤${hi}), ●=현재">
+    <div class="t">지수 RSI 장기 분포 <span style="float:right">${RSID.IXIC.span[0].slice(0,4)}~ ${RSID.IXIC.days.toLocaleString()}일</span></div>
+    ${row('나스닥', RSID.IXIC)}${row('코스피', RSID.KS11)}
+    <div style="color:var(--muted);font-size:11px;margin-top:5px">나스닥 연평균: ${ys.map(y=>`${y.slice(2)}'<b style="color:${yrs[y]<50?'var(--sell)':'var(--fg)'}">${fmtN(yrs[y],0)}</b>`).join(' ')} <span title="연평균이 50 아래로 떨어진 해는 20년 중 2008·2022 두 번뿐 (약세장)">ⓘ</span></div></div>`;
 }
 
 // ---------- 조건 평가 ----------
@@ -700,7 +726,7 @@ $('#od_cancel').onclick=()=>{ $('#odlg').style.display='none'; $('#od_ok').style
 loadKisStatus().then(()=>render());
 
 function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; try{localStorage.setItem('tf_market',m)}catch(_){} } render(); if(['buy','sell','report','acct'].includes(t)) openTab(t); }
-loadWatch(); loadResults().finally(()=>{ pollStatus(); applyHash(); });
+loadWatch(); loadRsiDist(); loadResults().finally(()=>{ pollStatus(); applyHash(); });
 window.addEventListener('hashchange', applyHash);
 </script>
 </body>

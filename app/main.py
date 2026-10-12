@@ -227,6 +227,37 @@ def backtest_ticker(
     return {"ticker": ticker.upper(), **t, "base": res["base"][t["region"]], "params": res["params"], "span": res["span"], "gate_days": res["gate_days"]}
 
 
+# ---------- 지수 RSI 장기 분포 (참고 지표) ----------
+_RSI_DIST: dict = {"key": None, "data": None}
+
+
+@app.get("/api/rsi_dist")
+def rsi_dist():
+    """나스닥/코스피 RSI(14)의 장기(캐시 전체) 분포: 평균·분위·구간 비율·현재 백분위."""
+    from .indicators import rsi as _rsi
+    key = longhist.signature()
+    if _RSI_DIST["key"] == key and _RSI_DIST["data"]:
+        return _RSI_DIST["data"]
+    out = {}
+    for sym in ("IXIC", "KS11"):
+        df = longhist.load_long(sym)
+        if df is None:
+            continue
+        r = _rsi(df["Close"].dropna()).dropna()
+        cur = float(r.iloc[-1])
+        out[sym] = {
+            "span": [r.index[0].strftime("%Y-%m-%d"), r.index[-1].strftime("%Y-%m-%d")], "days": int(len(r)),
+            "mean": round(float(r.mean()), 1), "median": round(float(r.median()), 1), "std": round(float(r.std()), 1),
+            "cur": round(cur, 1), "cur_pctile": round(float((r <= cur).mean() * 100), 1),
+            "pct": {str(int(q * 100)): round(float(r.quantile(q)), 1) for q in (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95)},
+            "le": {str(t): round(float((r <= t).mean() * 100), 1) for t in (30, 35, 40, 45, 50)},
+            "ge": {str(t): round(float((r >= t).mean() * 100), 1) for t in (60, 65, 70, 75, 80)},
+            "year_mean": {str(y): round(float(v), 1) for y, v in r.groupby(r.index.year).mean().items()},
+        }
+    _RSI_DIST.update(key=key, data=out)
+    return out
+
+
 # ---------- 한국투자증권 연동 ----------
 @app.get("/api/kis/status")
 def kis_status():
