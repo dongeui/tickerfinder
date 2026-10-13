@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, autosell, backtest, chart, fills, kis, longhist, positions, scanner
+from . import analysis, autosell, backtest, chart, fills, kis, longhist, positions, profile, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -254,6 +254,15 @@ def prob_model():
             if _PM["data"] is None:
                 raise HTTPException(503, f"prob_model.json 읽기 실패: {e}")
     return _PM["data"]
+
+
+@app.get("/api/profile/{ticker}")
+def profile_info(ticker: str, force: bool = False):
+    """종목 개요(섹터·산업·사업 요약)와 재무 지표 (yfinance, 7일 캐시). 실패 시 오래된 캐시(stale) 또는 404."""
+    res = profile.get(ticker.upper(), force=force)
+    if res is None:
+        raise HTTPException(404, "개요 데이터를 받지 못했습니다 (야후 파이낸스 응답 없음)")
+    return res
 
 
 @app.get("/api/backtest/{ticker}")

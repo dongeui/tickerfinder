@@ -76,6 +76,12 @@ tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;te
 .ctool .seg{margin:0}.ctool .seg button{padding:4px 10px;font-size:12px}
 .cwrap{position:relative;height:440px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .cdiv{position:absolute;inset:0}
+.cprof{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;margin-top:10px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.cp-sum{font-size:12px;color:var(--muted);line-height:1.55;max-height:7.8em;overflow:hidden}
+.cp-sum.open{max-height:none}
+.cprof table{font-size:12px;border:0;background:transparent}
+.cprof td{padding:3px 6px;border-bottom:1px solid var(--line)}
+@media (max-width:900px){.cprof{grid-template-columns:1fr}}
 .clegend{position:absolute;left:8px;top:6px;z-index:5;font:11px/1.6 var(--mono);color:var(--muted);pointer-events:none;background:rgba(23,26,33,.75);padding:2px 8px;border-radius:4px;max-width:calc(100% - 80px);white-space:normal}
 @media (max-width:700px){input[type=text]{width:100px}.bar{display:none}.cwrap{height:320px}}
 </style>
@@ -606,6 +612,52 @@ function renderTable(mode){
   $('#'+p+'_table').querySelectorAll('button.ord').forEach(b=>b.onclick=ev=>{ ev.stopPropagation(); orderDraft(b.dataset.t, b.dataset.side); });
   $('#'+p+'_table').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ ev.preventDefault(); showTicker(a.dataset.t, p); });
 }
+// ---------- 종목 개요·재무 (yfinance, /api/profile) ----------
+async function loadProfile(el, t, region){
+  try{
+    const r = await fetch('/api/profile/'+encodeURIComponent(t)); if(!r.ok) throw new Error(r.status);
+    const p = await r.json(); if(!el.isConnected) return;
+    el.innerHTML = profileHTML(p, region);
+    const sm = el.querySelector('.cp-sum'), more = el.querySelector('.cp-more');
+    if(more) more.onclick = ev=>{ ev.preventDefault(); sm.classList.toggle('open'); more.textContent = sm.classList.contains('open') ? '접기' : '더 보기'; };
+  }catch(e){ if(el.isConnected) el.innerHTML = '<div class="note">회사 정보를 받지 못했습니다 (야후 파이낸스 응답 없음)</div>'; }
+}
+function fmtMoney(v, cur){
+  if(v==null) return '-';
+  const neg = v<0; v = Math.abs(v);
+  let s;
+  if(cur==='KRW'){ s = v>=1e12 ? fmtN(v/1e12, v>=1e13?0:1)+'조' : v>=1e8 ? fmtN(v/1e8,0)+'억' : fmtN(v,0)+'원'; }
+  else { const sym = cur==='USD'||!cur ? '$' : cur+' '; s = v>=1e12 ? sym+fmtN(v/1e12,2)+'T' : v>=1e9 ? sym+fmtN(v/1e9,1)+'B' : v>=1e6 ? sym+fmtN(v/1e6,1)+'M' : sym+fmtN(v,0); }
+  return (neg?'-':'')+s;
+}
+const fmtPct = (v,d=1) => v==null ? '-' : (v>=0?'+':'')+fmtN(v*100,d)+'%';
+const fmtPct0 = (v,d=1) => v==null ? '-' : fmtN(v*100,d)+'%';
+function profileHTML(p, region){
+  const cur = p.financialCurrency || (region==='KR'?'KRW':'USD');
+  const J = []; // [label, verdict ok|warn|null]
+  const judge = (label, v, okFn, warnFn) => { if(v==null) return ''; const ok = okFn(v), warn = warnFn(v); if(ok) J.push([label,'ok']); else if(warn) J.push([label,'warn']); return ok ? ' <span class="pill ok" style="font-size:10px">양호</span>' : warn ? ' <span class="pill warn" style="font-size:10px">주의</span>' : ''; };
+  const rows = [];
+  rows.push(['시가총액 / EV', `${fmtMoney(p.marketCap,cur)} <span style="color:var(--muted)">/ ${fmtMoney(p.enterpriseValue,cur)}</span>`]);
+  rows.push(['PER 후행 / 선행', `${p.trailingPE==null?'-':fmtN(p.trailingPE,1)} <span style="color:var(--muted)">/</span> ${p.forwardPE==null?'-':fmtN(p.forwardPE,1)}${p.priceToBook!=null?` <span style="color:var(--muted)">· PBR ${fmtN(p.priceToBook,1)}</span>`:''}${p.enterpriseToEbitda!=null?` <span style="color:var(--muted)">· EV/EBITDA ${fmtN(p.enterpriseToEbitda,1)}</span>`:''}`]);
+  rows.push(['매출 (최근 4분기)', `${fmtMoney(p.totalRevenue,cur)} <span style="color:var(--muted)">· 성장 ${fmtPct(p.revenueGrowth)}</span>` + judge('매출 성장', p.revenueGrowth, v=>v>=0.05, v=>v<0)]);
+  rows.push(['이익률 총/영업/순', `${fmtPct0(p.grossMargins,0)} <span style="color:var(--muted)">/</span> ${fmtPct0(p.operatingMargins,1)} <span style="color:var(--muted)">/</span> ${fmtPct0(p.profitMargins,1)}` + judge('영업이익률', p.operatingMargins, v=>v>=0.15, v=>v<0.05)]);
+  rows.push(['순이익 · 이익 성장', `${fmtMoney(p.netIncomeToCommon,cur)} <span style="color:var(--muted)">· ${fmtPct(p.earningsGrowth)}</span>`]);
+  rows.push(['잉여현금흐름', `${fmtMoney(p.freeCashflow,cur)} <span style="color:var(--muted)">· 영업CF ${fmtMoney(p.operatingCashflow,cur)}</span>` + judge('잉여현금흐름', p.freeCashflow, v=>v>0, v=>v<0)]);
+  rows.push(['현금 / 부채', `${fmtMoney(p.totalCash,cur)} <span style="color:var(--muted)">/</span> ${fmtMoney(p.totalDebt,cur)}${p.debtToEquity!=null?` <span style="color:var(--muted)">· 부채/자본 ${fmtN(p.debtToEquity,0)}%</span>`:''}` + judge('부채/자본', p.debtToEquity, v=>v<=60, v=>v>=150)]);
+  rows.push(['유동비율 · ROE', `${p.currentRatio==null?'-':fmtN(p.currentRatio,2)} <span style="color:var(--muted)">·</span> ${fmtPct0(p.returnOnEquity)}` + judge('유동비율', p.currentRatio, v=>v>=1.5, v=>v<1) + judge('ROE', p.returnOnEquity, v=>v>=0.15, v=>v<0.05)]);
+  rows.push(['배당수익률 · 성향', `${p.dividendYield==null?'-':fmtN(p.dividendYield,2)+'%'} <span style="color:var(--muted)">·</span> ${fmtPct0(p.payoutRatio,0)}`]);
+  const rk = {strong_buy:'적극 매수', buy:'매수', hold:'보유', sell:'매도', strong_sell:'적극 매도', underperform:'시장 하회', none:'-'};
+  rows.push(['애널리스트', `${rk[p.recommendationKey]||p.recommendationKey||'-'}${p.numberOfAnalystOpinions?` <span style="color:var(--muted)">(${p.numberOfAnalystOpinions}명)</span>`:''}${p.targetMeanPrice!=null?` <span style="color:var(--muted)">· 평균 목표가 ${cur==='KRW'?fmtN(p.targetMeanPrice,0):fmtN(p.targetMeanPrice,2)}</span>`:''}`]);
+  rows.push(['52주 범위 · 베타', `${p.fiftyTwoWeekLow==null?'-':fmtN(p.fiftyTwoWeekLow,cur==='KRW'?0:2)} ~ ${p.fiftyTwoWeekHigh==null?'-':fmtN(p.fiftyTwoWeekHigh,cur==='KRW'?0:2)} <span style="color:var(--muted)">· β ${p.beta==null?'-':fmtN(p.beta,2)}</span>${p.shortPercentOfFloat!=null?` <span style="color:var(--muted)">· 공매도 ${fmtPct0(p.shortPercentOfFloat)}</span>`:''}`]);
+  const ok = J.filter(x=>x[1]==='ok').length, warn = J.filter(x=>x[1]==='warn');
+  const head = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px"><b>재무 한눈에</b> <span class="pill ok">양호 ${ok}</span> <span class="pill ${warn.length?'warn':''}">주의 ${warn.length}${warn.length?': '+warn.map(x=>x[0]).join(', '):''}</span> <span style="color:var(--muted);font-size:11px">Yahoo Finance${p.mostRecentQuarter?' · 최근 분기 '+p.mostRecentQuarter:''} · 받은 날 ${(p.fetched_at||'').slice(0,10)}${p.stale?' (갱신 실패, 이전 값)':''}${region==='KR'?' · 국내는 야후 집계라 오차 가능':''}</span></div>`;
+  const tags = [p.sector, p.industry].filter(Boolean).map(x=>`<span class="pill">${esc(x)}</span>`).join(' ');
+  const meta = [p.country, p.fullTimeEmployees?`직원 ${fmtN(p.fullTimeEmployees,0)}명`:null, p.website?`<a href="${esc(p.website)}" target="_blank" rel="noopener" style="color:var(--acc)">${esc(p.website.replace(/^https?:\/\/(www\.)?/,''))}</a>`:null].filter(Boolean).join(' · ');
+  const sum = p.longBusinessSummary ? `<div class="cp-sum">${esc(p.longBusinessSummary)}</div>${p.longBusinessSummary.length>420?'<a href="#" class="cp-more" style="color:var(--acc);font-size:12px">더 보기</a>':''}` : '<div class="note">사업 요약 없음</div>';
+  return `<div class="cp-left"><div style="margin-bottom:6px"><b>${esc(p.longName||p.ticker)}</b> ${tags} <span style="color:var(--muted);font-size:11px;margin-left:4px">${meta}</span></div><div class="note" style="margin:0 0 2px">사업 요약 (영문, Yahoo Finance)</div>${sum}</div>
+    <div class="cp-right">${head}<table>${rows.map(([k,v])=>`<tr><td class="l" style="color:var(--muted);white-space:nowrap">${k}</td><td class="l num" style="white-space:normal">${v}</td></tr>`).join('')}</table>
+    <div class="note" style="margin:4px 0 0">양호/주의는 단순 기준(영업이익률 15%/5%, 매출성장 5%/0, 부채/자본 60%/150%, 유동비율 1.5/1, FCF 부호, ROE 15%/5%)으로 표시한 참고값입니다.</div></div>`;
+}
 // ---------- 종목 행 펼침: 상세 캔들 차트 (일/주/월, 확대/축소) ----------
 const XP = {b:null, s:null};          // 표별 펼쳐진 종목
 const CH = {};                        // 표별 차트 인스턴스
@@ -642,6 +694,7 @@ function buildChartBox(box, t, p){
     <span style="margin-left:auto;color:var(--muted);font-size:12px">${info}</span>
     <a href="#" class="cclose" style="color:var(--muted);font-size:12px;text-decoration:none">접기 ✕</a></div>
     <div class="cwrap"><div class="clegend"></div><div class="cdiv"></div></div>
+    <div class="cprof"><div class="note" style="margin:0">회사 정보 불러오는 중…</div></div>
     <details class="cmore" style="margin-top:8px"><summary style="color:var(--muted);font-size:12px;cursor:pointer">지표 흐름 (RSI·스토캐스틱·밴드 위치) · 장기 백테스트 상세</summary><div class="cmorebody"><div class="note">불러오는 중…</div></div></details>`;
   box.querySelector('.cclose').onclick = ev=>{ ev.preventDefault(); closeRow(p); XP[p]=null; };
   box.querySelectorAll('.ctf button').forEach(b=>b.onclick=()=>{ CH_TF=b.dataset.tf; try{localStorage.setItem('tf_chart_tf',CH_TF)}catch(_){} box.querySelectorAll('.ctf button').forEach(x=>x.classList.toggle('on',x===b)); drawChart(box, t, p, s.region); });
@@ -649,6 +702,7 @@ function buildChartBox(box, t, p){
   box.querySelectorAll('.crange button').forEach(b=>b.onclick=()=>rangeChart(p, +b.dataset.r));
   box.querySelector('.cmore').addEventListener('toggle', ev=>{ if(ev.target.open && !ev.target.dataset.loaded){ ev.target.dataset.loaded='1'; loadMore(box.querySelector('.cmorebody'), t); } });
   drawChart(box, t, p, s.region);
+  loadProfile(box.querySelector('.cprof'), t, s.region);
 }
 async function drawChart(box, t, p, region){
   const el = box.querySelector('.cdiv'), leg = box.querySelector('.clegend');

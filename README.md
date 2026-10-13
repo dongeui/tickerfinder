@@ -8,7 +8,7 @@
 
 모든 임계값은 화면에서 바꿀 수 있고 브라우저에 저장된다.
 
-매수/매도 표에서 종목 행을 클릭하면 그 아래로 캔들 차트가 펼쳐진다(다시 클릭하면 접힘). 일/주/월봉 전환, +/− 또는 휠 확대·축소, 드래그 이동, 6개월~전체 기간, 50·150·200일선, 거래량, 보유 종목은 매수 지점 표시. 차트는 lightweight-charts 4.2.3(jsdelivr CDN)이라 인터넷이 없으면 안 그려진다. 차트 아래 "지표 흐름 · 장기 백테스트 상세"를 열면 예전 상세가 나온다. 주소 해시 `#AVGO` 또는 `#005930/KR` 로 바로 펼칠 수 있다.
+매수/매도 표에서 종목 행을 클릭하면 그 아래로 캔들 차트가 펼쳐진다(다시 클릭하면 접힘). 일/주/월봉 전환, +/− 또는 휠 확대·축소, 드래그 이동, 6개월~전체 기간, 50·150·200일선, 거래량, 보유 종목은 매수 지점 표시. 차트는 lightweight-charts 4.2.3(jsdelivr CDN)이라 인터넷이 없으면 안 그려진다. 차트 아래 "지표 흐름 · 장기 백테스트 상세"를 열면 예전 상세가 나온다. 주소 해시 `#AVGO` 또는 `#005930/KR` 로 바로 펼칠 수 있다. 차트 아래에 회사 정보(섹터·산업·사업 요약(영문)·시가총액·PER·매출/이익률/성장·FCF·현금/부채·유동비율·ROE·배당·애널리스트 의견·52주)가 야후 파이낸스에서 받아져 7일 캐시된다. 양호/주의 표시는 단순 임계값(영업이익률 15%/5%, 매출성장 5%/0, 부채/자본 60%/150%, 유동비율 1.5/1, FCF 부호, ROE 15%/5%) 참고값이고, 국내 종목은 야후 집계라 오차가 있을 수 있다.
 
 ## 실행
 ```bash
@@ -110,4 +110,4 @@ uv run python -m app.backfill 2026-06-01 2026-10-11 [--overwrite]
 - 종목 리스트: KRX(FDR), S&P500(위키), Nasdaq-100(나스닥 공식 API → stockanalysis → 위키 순 폴백).
 
 ## API
-`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/sparks`, `/api/backtest`, `/api/watchlist`
+`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/profile/{ticker}[?force=true]` (yfinance `Ticker.info` 개요·재무, `data/profiles/` 7일 캐시, 실패 시 stale 캐시), `/api/sparks`, `/api/backtest`, `/api/watchlist`
