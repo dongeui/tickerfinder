@@ -69,7 +69,15 @@ a.tk:hover{color:var(--acc)}
 .chart h3{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:500}
 svg text{fill:var(--muted);font-size:10px;font-family:var(--mono)}
 textarea{width:100%;min-height:60px}
-@media (max-width:700px){input[type=text]{width:100px}.bar{display:none}}
+tr.xopen td{background:#1b1f28}
+tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;text-align:left;cursor:default}
+.xbox{padding:10px 12px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ctool{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.ctool .seg{margin:0}.ctool .seg button{padding:4px 10px;font-size:12px}
+.cwrap{position:relative;height:440px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.cdiv{position:absolute;inset:0}
+.clegend{position:absolute;left:8px;top:6px;z-index:5;font:11px/1.6 var(--mono);color:var(--muted);pointer-events:none;background:rgba(23,26,33,.75);padding:2px 8px;border-radius:4px;max-width:calc(100% - 80px);white-space:normal}
+@media (max-width:700px){input[type=text]{width:100px}.bar{display:none}.cwrap{height:320px}}
 </style>
 </head>
 <body>
@@ -116,6 +124,7 @@ textarea{width:100%;min-height:60px}
         <span id="wrap_tf_kr"><label>국내</label><select id="b_st_tf_kr"><option value="d">일봉</option><option value="w">주봉</option></select></span>
         <span id="wrap_tf_us"><label>미국</label><select id="b_st_tf_us"><option value="d">일봉</option><option value="w" selected>주봉</option></select></span></div>
       <div class="grp cond"><input type="checkbox" id="b_ma_on" checked><label>150~200일선 밴드 ±</label><input type="number" id="b_ma_tol" value="3" step="0.5">%</div>
+      <div class="grp cond" title="20년 백테스트: 200일선 기울기 상위(3분위 최상위)이면서 50일선 20일 기울기가 0% 이상(횡보·상승)인 진입만. 미국 60일 승률 73%, 하위 10% -12% (전체 70% / -11~-18%)"><input type="checkbox" id="b_core_on"><label>200일선 상위 × 50일선 횡보 이상만</label></div>
       <div class="grp"><label>표시</label><select id="b_near"><option value="0">전부 충족</option><option value="1">1개 미충족까지</option></select></div>
     </div>
     <div class="filters" id="fCommonBuy"></div>
@@ -221,6 +230,7 @@ textarea{width:100%;min-height:60px}
   </section>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const fmtN = (v, d=0) => v==null ? '-' : v.toLocaleString('ko-KR',{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -231,7 +241,8 @@ let MARKET = null; try{ MARKET = localStorage.getItem('tf_market')||null; }catch
 let REGION = 'US'; try{ REGION = localStorage.getItem('tf_region')||'US'; }catch(_){}
 const MKT_REGION = {IXIC:'US', GSPC:'US', KS11:'KR', KQ11:'KR'};
 let STREAK = {buy:{}, sell:{}};
-let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null, RSID = null, PM = undefined; // PM: undefined=로딩중, false=없음/실패, object=모델 const TFN = {d:'일봉', w:'주봉', m:'월봉'};
+let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null, RSID = null, PM = undefined; // PM: undefined=로딩중, false=없음/실패, object=모델
+const TFN = {d:'일봉', w:'주봉', m:'월봉'};
 let DATA = null, WATCH = [], sortKey = {buy:'prob', sell:'rsi_d'}, sortDir = {buy:-1, sell:-1};
 
 // ---------- 공통 필터 (지역, 거래대금, 검색) ----------
@@ -482,6 +493,7 @@ function evalRows(mode){
     if(miss > near) continue;
     const gate = mode==='buy' ? mktOK(s.region) : null;
     if(mode==='buy' && $('#b_mkt_on').checked && gate!==true) continue;
+    if(mode==='buy' && $('#b_core_on').checked && !(slopeTier(s)==='hi' && s.ma_slope50!=null && s.ma_slope50>=0)) continue;
     let isNew = false;
     if(s.prev){ const pc = condFn(s, {...s, ...s.prev}).filter(c=>c.on); isNew = pc.some(c=>!c.hit) && miss===0; }
     rows.push({s, conds:cs, miss, isNew, gate});
@@ -491,7 +503,7 @@ function evalRows(mode){
 
 // ---------- 테이블 ----------
 const COLS = {
-  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['streak','체류','l'],['prob','추천확률 (보수적)'],['exp','기대수익 20일 / 60일']],
+  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['streak','체류','l'],['prob','추천확률 (보수적)'],['exp','기대수익 20일 / 60일']],
   sell:[['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['rsi','일RSI / 주RSI'],['streak','체류','l']],
 };
 function fmtCap(s){ if(s.marcap==null) return '-'; if(s.region==='KR'){ const j=s.marcap/1e12; return j>=1 ? fmtN(j,j>=10?0:1)+'조' : fmtN(s.marcap/1e8,0)+'억'; } const b=s.marcap/1e9; return b>=1000 ? '$'+fmtN(b/1000,2)+'T' : '$'+fmtN(b,0)+'B'; }
@@ -503,10 +515,13 @@ function sparkline(t){
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="vertical-align:middle;margin-right:6px"><polyline fill="none" stroke="${col}" stroke-width="1.3" points="${c.map((v,i)=>x(i)+','+y(v)).join(' ')}"/><circle cx="${x(n-1)}" cy="${y(c[n-1])}" r="2" fill="${col}"/></svg>`;
 }
 // 200일선 20일 기울기(%). 20년 백테스트(scripts/trend_vs_prob.py) 3분위: 상위 ≥ +2.1%, 하위 < +0.9%. 상위가 하위보다 60일 평균 +3~6%p, 180일 +6~10%p (같은 추천확률 구간에서도).
+function slopeTh(region){ const t=PM?.thresholds?.[region]?.slope200; return (t&&t.length===2) ? t : [0.9, 2.1]; }
+function slopeTier(s){ const v=s.ma_slope200; if(v==null) return null; const [lo,hi]=slopeTh(s.region); return v>=hi?'hi':v>=lo?'mid':'lo'; }
 function slopeCell(s){
   const v=s.ma_slope200; if(v==null) return '-';
-  const [lab,cls] = v>=2.1?['상위','up']:v>=0.9?['중위','']:['하위','dn'];
-  return `<span class="${cls}" style="font-weight:600">${v>=0?'+':''}${fmtN(v,1)}%</span> <span class="pill ${cls==='up'?'ok':cls==='dn'?'no':''}" style="font-size:10px" title="20년 백테스트 3분위: 상위 ≥+2.1% / 하위 <+0.9%. 상위가 하위보다 60일 평균 +3~6%p, 180일 +6~10%p 높음 (같은 추천확률에서도)">${lab}</span>`;
+  const tier=slopeTier(s), [lo,hi]=slopeTh(s.region);
+  const [lab,cls] = tier==='hi'?['상위','up']:tier==='mid'?['중위','']:['하위','dn'];
+  return `<span class="${cls}" style="font-weight:600">${v>=0?'+':''}${fmtN(v,1)}%</span> <span class="pill ${cls==='up'?'ok':cls==='dn'?'no':''}" style="font-size:10px" title="20년 백테스트 3분위: 상위 ≥+${hi}% / 하위 <+${lo}%. 상위가 하위보다 60일 평균 +3~6%p, 180일 +6~10%p 높음 (같은 추천확률에서도)">${lab}</span>`;
 }
 function trendText(s){
   const sl=s.ma_slope200, h=s.from_high52, r1=s.ret_1m;
@@ -556,25 +571,27 @@ function cellClass(mode, s, key){
 }
 function renderTable(mode){
   const rows = evalRows(mode); const p = mode==='buy'?'b':'s'; const near = +$('#'+p+'_near').value;
+  disposeChart(p);
   const key = sortKey[mode], dir = sortDir[mode];
   if(mode==='buy') for(const r of rows) r.cp = consProb(r.s);
-  const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='prob' ? (r.cp?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
+  const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='prob' ? (r.cp?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
   rows.sort((a,b)=>{ if(a.miss!==b.miss) return a.miss-b.miss; const x=val(a), y=val(b); if(x==null) return 1; if(y==null) return -1; return (x>y?1:x<y?-1:0)*dir; });
   const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length;
   $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목</span><span>신규 진입 <b>${newN}</b></span><span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
   if(mode==='buy'){ const ok=mktOK('US'), okK=mktOK('KR'); const ixr=DATA.indices?.IXIC?.rsi_d, ksr=DATA.indices?.KS11?.rsi_d;
     $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. <b>추천확률(보수적)</b>은 20년 백테스트에서 그 지역·조건 조합(둘 다 / 스토캐스틱만 / 밴드만)으로 진입했을 때의 승률·반등확률 가중치를 통계적 하한으로 잡고, 200일선 기울기 3분위(상위/중위/하위)로 보정한 값입니다. 미래 데이터를 쓰지 않도록(룩어헤드 없이) 검증했고 예측치가 실제 승률을 넘지 않게 맞췄습니다. 종목 자체의 과거 진입 통계는 검증 결과 예측력이 없어 확률에 넣지 않고 "종목 과거"로만 참고 표시합니다. ' + pmNote() + ' 종목을 클릭하면 상세가 보입니다.'; }
-  if(!rows.length){ $('#'+p+'_table').innerHTML='<div class="empty">조건을 만족하는 종목이 없습니다.</div>' + renderExits(mode); return; }
+  if(!rows.length){ const noS50 = mode==='buy' && $('#b_core_on').checked && !DATA.stocks.some(x=>x.region===REGION && x.ma_slope50!=null); const coreOn = mode==='buy' && $('#b_core_on').checked; $('#'+p+'_table').innerHTML='<div class="empty">'+(noS50?'50일선 기울기는 다음 스캔/동기화부터 계산됩니다. 상단 "지금 동기화"를 누르거나 필터를 끄세요.':coreOn?'조건 충족 종목 중 「200일선 상위 × 50일선 횡보 이상」인 종목이 오늘은 없습니다. 백테스트에서 이 조합은 전체 진입의 약 15%로 드뭅니다. 필터를 끄면 전체가 보입니다.':'조건을 만족하는 종목이 없습니다.')+'</div>' + renderExits(mode); return; }
   const cols = COLS[mode];
   let h = '<table><thead><tr>' + cols.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (mode==='buy'?'<th>시장</th>':'') + (near?'<th>충족</th>':'') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
   for(const r of rows){ const s=r.s;
-    h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 추세·체류·장기 확률 상세">` + cols.map(([k,n,l])=>{
+    h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 상세 차트 펼치기/접기">` + cols.map(([k,n,l])=>{
       let v;
       if(k==='name') v = `<div>${s.name} <span style="color:var(--muted);font-size:11px">${s.ticker} · ${s.market}</span>${r.isNew?'<span class="new">NEW</span>':''}${s.rule_a?' <span class="pill ok" title="200일선 상승 & 50일선 -9% 이하 & RSI≤40 (과거 시장 환경 충족 국면에서 가장 크게 반등한 유형)">A</span>':''}${s.suspect?' <span class="pill no" title="최근 250봉 내 하루 ±50% 이상 점프: 분할/감자 등 수정주가 미반영 가능">의심</span>':''}</div><div style="font-size:11px;color:var(--muted)" class="num">${fmtPx(s)} <span class="${s.chg>=0?'up':'dn'}">${s.chg==null?'':(s.chg>=0?'+':'')+fmtN(s.chg,1)+'%'}</span>${s.partial?' <span title="장중 잠정값 (현재가 기준, 마감 후 확정)">⏱</span>':''}</div>`;
       else if(k==='marcap') v = fmtCap(s);
       else if(k==='streak') v = streakCell(mode, s);
       else if(k==='trend') v = trendText(s);
       else if(k==='slope') v = slopeCell(s);
+      else if(k==='slope50') v = slope50Cell(s);
       else if(k==='prob') v = probCell(s, r.cp, r.gate);
       else if(k==='exp') v = expCell(s);
       else if(k==='rsi') v = `<span class="${cellClass('sell',s,'rsi_d')}">${fmtN(s.rsi_d,0)}</span> <span style="color:var(--muted)">/</span> <span class="${cellClass('sell',s,'rsi_w')}">${fmtN(s.rsi_w,0)}</span>`;
@@ -584,9 +601,122 @@ function renderTable(mode){
   }
   $('#'+p+'_table').innerHTML = h + '</tbody></table>' + renderExits(mode);
   $('#'+p+'_table').querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; if(sortKey[mode]===k) sortDir[mode]*=-1; else {sortKey[mode]=k; sortDir[mode]=1;} renderTable(mode); });
-  $('#'+p+'_table').querySelectorAll('tr[data-t]').forEach(tr=>tr.onclick=ev=>{ if(ev.target.closest('a')||ev.target.closest('button')) return; showTicker(tr.dataset.t, p); });
+  $('#'+p+'_table').querySelectorAll('tr[data-t]').forEach(tr=>tr.onclick=ev=>{ if(ev.target.closest('a')||ev.target.closest('button')) return; toggleRow(tr, tr.dataset.t, p); });
+  restoreRow(p);
   $('#'+p+'_table').querySelectorAll('button.ord').forEach(b=>b.onclick=ev=>{ ev.stopPropagation(); orderDraft(b.dataset.t, b.dataset.side); });
   $('#'+p+'_table').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ ev.preventDefault(); showTicker(a.dataset.t, p); });
+}
+// ---------- 종목 행 펼침: 상세 캔들 차트 (일/주/월, 확대/축소) ----------
+const XP = {b:null, s:null};          // 표별 펼쳐진 종목
+const CH = {};                        // 표별 차트 인스턴스
+const CH_CACHE = {};                  // ticker+tf → 봉 데이터
+let CH_TF = 'd'; try{ CH_TF = localStorage.getItem('tf_chart_tf')||'d'; }catch(_){}
+const TF_BARS_PER_MONTH = {d:21, w:4.35, m:1};
+const DEFAULT_MONTHS = {d:12, w:36, m:0};
+function colCount(p){ const tr=$('#'+p+'_table thead tr'); return tr ? tr.children.length : 8; }
+function disposeChart(p){ const c=CH[p]; if(c){ try{ c.chart.remove(); }catch(_){} delete CH[p]; } }
+function closeRow(p){ disposeChart(p); const tb=$('#'+p+'_table'); if(!tb) return; tb.querySelectorAll('tr.xrow').forEach(x=>x.remove()); tb.querySelectorAll('tr.xopen').forEach(x=>x.classList.remove('xopen')); }
+function toggleRow(tr, t, p){ const wasOpen = XP[p]===t; closeRow(p); if(wasOpen){ XP[p]=null; return; } XP[p]=t; openRow(tr, t, p); }
+function openRow(tr, t, p){
+  tr.classList.add('xopen');
+  const x=document.createElement('tr'); x.className='xrow'; x.innerHTML=`<td colspan="${colCount(p)}"><div class="xbox"></div></td>`;
+  tr.after(x);
+  buildChartBox(x.querySelector('.xbox'), t, p);
+}
+function restoreRow(p){ if(!XP[p]) return; const tr=$('#'+p+'_table').querySelector(`tr[data-t="${CSS.escape(XP[p])}"]`); if(tr) openRow(tr, XP[p], p); else XP[p]=null; }
+async function chartData(t, tf){
+  const k=t+'|'+tf; if(CH_CACHE[k]) return CH_CACHE[k];
+  const r = await fetch('/api/chart/'+encodeURIComponent(t)+'?tf='+tf); if(!r.ok) throw new Error('chart '+r.status);
+  const d = await r.json(); CH_CACHE[k]=d; return d;
+}
+function buildChartBox(box, t, p){
+  const s = DATA?.stocks?.find(z=>z.ticker===t) || {ticker:t};
+  const st = STREAK.buy[t], ss = STREAK.sell[t];
+  const info = `매수 조건 ${st?.streak?st.streak+'일째 ('+st.since+'부터)':'미충족'}${st?.exited?' (오늘 이탈, '+st.prev_streak+'일 체류)':''} · 매도 조건 ${ss?.streak?ss.streak+'일째':'미충족'}`;
+  box.innerHTML = `<div class="ctool">
+    <b style="font-size:14px">${esc(s.name||t)}</b><span style="color:var(--muted);font-size:12px">${esc(t)}${s.market?' · '+esc(s.market):''}</span>
+    <span class="seg ctf" title="봉 단위">${['d','w','m'].map(k=>`<button data-tf="${k}" class="${k===CH_TF?'on':''}">${TFN[k]}</button>`).join('')}</span>
+    <span class="seg czoom"><button data-z="out" title="축소 (마우스 휠로도 가능)">−</button><button data-z="in" title="확대">+</button></span>
+    <span class="seg crange" title="보이는 기간">${[[6,'6개월'],[12,'1년'],[36,'3년'],[120,'10년'],[0,'전체']].map(([m,n])=>`<button data-r="${m}">${n}</button>`).join('')}</span>
+    <span class="note" style="margin:0">휠: 확대/축소 · 드래그: 이동 · 더블클릭: 전체</span>
+    <span style="margin-left:auto;color:var(--muted);font-size:12px">${info}</span>
+    <a href="#" class="cclose" style="color:var(--muted);font-size:12px;text-decoration:none">접기 ✕</a></div>
+    <div class="cwrap"><div class="clegend"></div><div class="cdiv"></div></div>
+    <details class="cmore" style="margin-top:8px"><summary style="color:var(--muted);font-size:12px;cursor:pointer">지표 흐름 (RSI·스토캐스틱·밴드 위치) · 장기 백테스트 상세</summary><div class="cmorebody"><div class="note">불러오는 중…</div></div></details>`;
+  box.querySelector('.cclose').onclick = ev=>{ ev.preventDefault(); closeRow(p); XP[p]=null; };
+  box.querySelectorAll('.ctf button').forEach(b=>b.onclick=()=>{ CH_TF=b.dataset.tf; try{localStorage.setItem('tf_chart_tf',CH_TF)}catch(_){} box.querySelectorAll('.ctf button').forEach(x=>x.classList.toggle('on',x===b)); drawChart(box, t, p, s.region); });
+  box.querySelectorAll('.czoom button').forEach(b=>b.onclick=()=>zoomChart(p, b.dataset.z==='in'?1/1.5:1.5));
+  box.querySelectorAll('.crange button').forEach(b=>b.onclick=()=>rangeChart(p, +b.dataset.r));
+  box.querySelector('.cmore').addEventListener('toggle', ev=>{ if(ev.target.open && !ev.target.dataset.loaded){ ev.target.dataset.loaded='1'; loadMore(box.querySelector('.cmorebody'), t); } });
+  drawChart(box, t, p, s.region);
+}
+async function drawChart(box, t, p, region){
+  const el = box.querySelector('.cdiv'), leg = box.querySelector('.clegend');
+  disposeChart(p);
+  const LW = window.LightweightCharts;
+  if(!LW){ el.innerHTML = '<div class="note" style="padding:20px">차트 라이브러리(lightweight-charts CDN)를 불러오지 못했습니다. 인터넷 연결을 확인하세요.</div>'; return; }
+  let d; try{ d = await chartData(t, CH_TF); }catch(e){ el.innerHTML = '<div class="note" style="padding:20px">차트 데이터 없음</div>'; return; }
+  if(!box.isConnected || XP[p]!==t) return;  // 그 사이 접혔거나 다른 종목을 열었음
+  el.innerHTML='';
+  const kr = (region||d.region)==='KR';
+  const fmtP = v => kr ? Math.round(v).toLocaleString('ko-KR') : v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const chart = LW.createChart(el, {autoSize:true, layout:{background:{type:'solid',color:'#171a21'}, textColor:'#8b93a7', fontSize:11},
+    grid:{vertLines:{color:'#232833'}, horzLines:{color:'#232833'}}, rightPriceScale:{borderColor:'#2a2f3a', scaleMargins:{top:0.06,bottom:0.22}},
+    timeScale:{borderColor:'#2a2f3a', rightOffset:4, minBarSpacing:0.5, timeVisible:false}, crosshair:{mode:LW.CrosshairMode.Normal},
+    localization:{locale:'ko-KR', priceFormatter: fmtP}, handleScroll:true, handleScale:true});
+  const pf = kr ? {type:'price', precision:0, minMove:1} : {type:'price', precision:2, minMove:0.01};
+  const candle = chart.addCandlestickSeries({upColor:'#2ecc8a', downColor:'#ff5c7a', borderVisible:false, wickUpColor:'#2ecc8a', wickDownColor:'#ff5c7a', priceFormat:pf});
+  const vol = chart.addHistogramSeries({priceFormat:{type:'volume'}, priceScaleId:'vol', lastValueVisible:false, priceLineVisible:false});
+  chart.priceScale('vol').applyOptions({scaleMargins:{top:0.84, bottom:0}});
+  const mk = (color) => chart.addLineSeries({color, lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false, priceFormat:pf});
+  const ma50 = mk('#f5b84f'), ma150 = mk('#4f8cff'), ma200 = mk('#c678dd');
+  const bars = d.bars;
+  candle.setData(bars.map(b=>({time:b.t, open:b.o, high:b.h, low:b.l, close:b.c})));
+  vol.setData(bars.map(b=>({time:b.t, value:b.v, color: b.c>=b.o ? 'rgba(46,204,138,.35)' : 'rgba(255,92,122,.35)'})));
+  ma50.setData(bars.filter(b=>b.ma50!=null).map(b=>({time:b.t, value:b.ma50})));
+  ma150.setData(bars.filter(b=>b.ma150!=null).map(b=>({time:b.t, value:b.ma150})));
+  ma200.setData(bars.filter(b=>b.ma200!=null).map(b=>({time:b.t, value:b.ma200})));
+  const marks = [];
+  for(const m of d.marks||[]){ const b = bars.find(x=>x.t>=m.t); if(b) marks.push({time:b.t, position:'belowBar', color:'#4f8cff', shape:'arrowUp', text:`매수 ${m.px!=null?fmtP(m.px):''}${m.qty?' ×'+m.qty:''}`}); }
+  if(marks.length) candle.setMarkers(marks);
+  const byT = new Map(bars.map((b,i)=>[b.t,i]));
+  const legend = (i)=>{
+    const b = bars[i]; if(!b) return;
+    const prev = bars[i-1]; const chg = prev ? (b.c/prev.c-1)*100 : null;
+    const v = b.v>=1e9 ? (b.v/1e9).toFixed(2)+'B' : b.v>=1e6 ? (b.v/1e6).toFixed(1)+'M' : b.v>=1e3 ? (b.v/1e3).toFixed(0)+'K' : String(b.v);
+    leg.innerHTML = `<b style="color:var(--fg)">${b.t}</b> 시 ${fmtP(b.o)} 고 ${fmtP(b.h)} 저 ${fmtP(b.l)} 종 <b style="color:var(--fg)">${fmtP(b.c)}</b> <span class="${chg>=0?'up':'dn'}">${chg==null?'':(chg>=0?'+':'')+chg.toFixed(1)+'%'}</span> 거래량 ${v}
+      <span style="margin-left:8px;color:#f5b84f">MA50 ${b.ma50==null?'-':fmtP(b.ma50)}</span> <span style="color:#4f8cff">MA150 ${b.ma150==null?'-':fmtP(b.ma150)}</span> <span style="color:#c678dd">MA200 ${b.ma200==null?'-':fmtP(b.ma200)}</span>`;
+  };
+  legend(bars.length-1);
+  chart.subscribeCrosshairMove(prm=>{ const i = prm.time!=null ? byT.get(prm.time) : undefined; legend(i==null ? bars.length-1 : i); });
+  el.ondblclick = ()=>chart.timeScale().fitContent();
+  CH[p] = {chart, n:bars.length, tf:CH_TF};
+  rangeChart(p, DEFAULT_MONTHS[CH_TF]);
+}
+function zoomChart(p, f){
+  const c=CH[p]; if(!c) return; const ts=c.chart.timeScale(); const r=ts.getVisibleLogicalRange(); if(!r) return;
+  let w=(r.to-r.from)*f; w=Math.max(8, Math.min(w, c.n+10));
+  ts.setVisibleLogicalRange({from:r.to-w, to:r.to});
+}
+function rangeChart(p, months){
+  const c=CH[p]; if(!c) return; const ts=c.chart.timeScale();
+  if(!months){ ts.fitContent(); return; }
+  const k = Math.round(months*TF_BARS_PER_MONTH[c.tf]);
+  ts.setVisibleLogicalRange({from: Math.max(-1, c.n-k), to: c.n+3});
+}
+async function loadMore(el, t){
+  try{
+    const d = await (await fetch('/api/ticker/'+encodeURIComponent(t))).json();
+    el.innerHTML = (d.rows?.length ? `<div class="note">지표 흐름 ${d.rows[0].date} ~ ${d.rows[d.rows.length-1].date}</div>` + tickerChart(d) : '<div class="note">지표 히스토리 없음</div>') + '<div class="btbox"><div class="note">장기 백테스트 불러오는 중…</div></div>';
+    const r = await fetch('/api/backtest/'+encodeURIComponent(t)+'?'+btQuery());
+    el.querySelector('.btbox').innerHTML = r.ok ? backtestDetail(await r.json()) : '<div class="note">이 종목의 장기 백테스트가 아직 없습니다 (상단 "장기 백테스트 갱신").</div>';
+  }catch(e){ el.innerHTML = '<div class="note">상세 로드 실패</div>'; }
+}
+// 50일선 20일 기울기(%): 200일선 상위 안에서 횡보(0~3%)가 승률 73%·하위10% -12%로 가장 안정, 급락(<-3%)은 평균은 크지만(+10%) 승률 60%·하위10% -18%이고 2016년 이전엔 승률 48%.
+function slope50Cell(s){
+  const v=s.ma_slope50; if(v==null) return '<span style="color:var(--muted);font-size:11px" title="다음 스캔/동기화부터 계산됩니다">-</span>';
+  const [lab,cls] = v>=3?['상승','up']:v>=0?['횡보','up']:v>=-3?['하락','']:['급락','dn'];
+  return `<span class="${cls}" style="font-weight:600">${v>=0?'+':''}${fmtN(v,1)}%</span> <span class="pill ${cls==='up'?'ok':cls==='dn'?'no':''}" style="font-size:10px" title="미국 20년, 200일선 기울기 상위 안에서 60일: 횡보(0~3%) 승률 73% 평균 +8.2% 하위10% -12% / 하락(-3~0%) 64% +7.3% -14% / 급락(<-3%) 60% +10.4% -18% (2016년 이전엔 48%) / 상승(>3%) 표본 70건으로 판단 불가">${lab}</span>`;
 }
 function renderExits(mode){
   const byT = Object.fromEntries(DATA.stocks.map(x=>[x.ticker,x]));
@@ -881,7 +1011,7 @@ async function orderDraft(t, side, qtyHint){
 $('#od_cancel').onclick=()=>{ $('#odlg').style.display='none'; $('#od_ok').style.display=''; $('#od_cancel').textContent='취소'; };
 loadKisStatus().then(()=>render());
 
-function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && (m==='US'||m==='KR') && REGION!==m){ REGION=m; try{localStorage.setItem('tf_region',m)}catch(_){} syncRegionUI(); } else if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; REGION=MKT_REGION[m]; try{localStorage.setItem('tf_market',m); localStorage.setItem('tf_region',REGION)}catch(_){} syncRegionUI(); } render(); if(['buy','sell','report','acct'].includes(t)) openTab(t); }
+function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && (m==='US'||m==='KR') && REGION!==m){ REGION=m; try{localStorage.setItem('tf_region',m)}catch(_){} syncRegionUI(); } else if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; REGION=MKT_REGION[m]; try{localStorage.setItem('tf_market',m); localStorage.setItem('tf_region',REGION)}catch(_){} syncRegionUI(); } render(); if(['buy','sell','report','acct','trades'].includes(t)) openTab(t); else if(t){ const tk=decodeURIComponent(t).toUpperCase(); for(const p of ['b','s']){ const tr=$('#'+p+'_table')?.querySelector(`tr[data-t="${CSS.escape(tk)}"]`); if(tr){ openTab(p==='b'?'buy':'sell'); closeRow(p); XP[p]=tk; openRow(tr, tk, p); tr.scrollIntoView({block:'nearest'}); break; } } } }
 loadWatch(); loadRsiDist(); loadResults().finally(()=>{ pollStatus(); applyHash(); });
 window.addEventListener('hashchange', applyHash);
 </script>

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, autosell, backtest, fills, kis, longhist, positions, scanner
+from . import analysis, autosell, backtest, chart, fills, kis, longhist, positions, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -105,7 +105,7 @@ def _tf(v: str) -> str:
     return v if v in ("d", "w", "m") else "d"
 
 
-def _th(stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+def _th(stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
         rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85,
         stoch_tf_kr: str = "d", stoch_tf_us: str = "w") -> analysis.Thresholds:
     return analysis.Thresholds(stoch_max, band_tol, mkt_lo, mkt_hi, rsi_d_min, rsi_w_lo, rsi_w_hi, _tf(stoch_tf_kr), _tf(stoch_tf_us))
@@ -114,7 +114,7 @@ def _th(stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: 
 @app.get("/api/history")
 def history(
     limit: int = Query(200, le=2000),
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
     rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85, stoch_tf_kr: str = "d", stoch_tf_us: str = "w",
 ):
     """날짜별 지수 지표 + 임계값 기준 매수/매도 시그널 종목."""
@@ -125,7 +125,7 @@ def history(
 @app.get("/api/signals")
 def signals(
     mode: str = "buy", require_mkt: bool = False, use_kr_index: bool = False, limit: int = Query(600, le=5000),
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
     rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85, stoch_tf_kr: str = "d", stoch_tf_us: str = "w",
 ):
     """시그널 진입 이벤트 + 이후 5/10/20거래일 수익률 요약."""
@@ -138,7 +138,7 @@ def signals(
 @app.get("/api/streaks")
 def streaks(
     mode: str = "buy",
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
     rsi_d_min: float = 75, rsi_w_lo: float = 65, rsi_w_hi: float = 85, stoch_tf_kr: str = "d", stoch_tf_us: str = "w",
 ):
     """종목별 연속 충족 일수 / 오늘 이탈 정보."""
@@ -150,6 +150,18 @@ def streaks(
 @app.get("/api/ticker/{ticker}")
 def ticker(ticker: str):
     return analysis.ticker_series(ticker.upper())
+
+
+@app.get("/api/chart/{ticker}")
+def chart_series(ticker: str, tf: str = Query("d", pattern="^[dwm]$")):
+    """상세 차트용 봉 데이터 (20년 일봉 + 최근 캐시, tf=d|w|m) + 50·150·200일선 + 보유 진입 표시."""
+    t = ticker.upper()
+    meta = analysis.names_map().get(t, {})
+    res = chart.series(t, tf, meta.get("region"))
+    if res is None:
+        raise HTTPException(404, "가격 데이터 없음")
+    res.update(name=meta.get("name", t), region=meta.get("region"))
+    return res
 
 
 # ---------- 최근 60일 종가 (표의 미니 추세선) ----------
@@ -194,7 +206,7 @@ def _bt_run(th: analysis.Thresholds, use_kr_index: bool, fetch: bool, years: int
 @app.post("/api/backtest/run")
 def backtest_run(
     fetch: bool = True, use_kr_index: bool = True, stoch_tf_kr: str = "d", stoch_tf_us: str = "w",
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40, years: int | None = Query(None, ge=1, le=30),
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40, years: int | None = Query(None, ge=1, le=30),
     entry: str = "next_open",
 ):
     """장기 데이터 수집(fetch=true) 후 백테스트 계산을 백그라운드로 실행. years 를 주면 그 기간으로 전체 재수집."""
@@ -213,7 +225,7 @@ def backtest_status():
 @app.get("/api/backtest")
 def backtest_summary(
     use_kr_index: bool = True, stoch_tf_kr: str = "d", stoch_tf_us: str = "w", entry: str = "next_open",
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
 ):
     """종목별 추천확률 요약. 캐시가 없으면 계산을 시작하고 202를 돌려준다."""
     th = _bt_th(stoch_max, band_tol, mkt_lo, mkt_hi, stoch_tf_kr, stoch_tf_us)
@@ -247,7 +259,7 @@ def prob_model():
 @app.get("/api/backtest/{ticker}")
 def backtest_ticker(
     ticker: str, use_kr_index: bool = True, stoch_tf_kr: str = "d", stoch_tf_us: str = "w", entry: str = "next_open",
-    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 30, mkt_hi: float = 40,
+    stoch_max: float = 25, band_tol: float = 3, mkt_lo: float = 0, mkt_hi: float = 40,
 ):
     res = backtest.cached(_bt_th(stoch_max, band_tol, mkt_lo, mkt_hi, stoch_tf_kr, stoch_tf_us), use_kr_index, entry)
     if res is None:

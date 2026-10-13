@@ -20,7 +20,7 @@ HORIZONS = (5, 10, 20)
 class Thresholds:
     stoch_max: float = 25
     band_tol: float = 3
-    mkt_lo: float = 30
+    mkt_lo: float = 0  # 사용자 결정: 하한 없이 "지수 RSI ≤ mkt_hi" 만 본다 (화면 b_mkt_lo 숨김=0)
     mkt_hi: float = 40
     rsi_d_min: float = 75
     rsi_w_lo: float = 65

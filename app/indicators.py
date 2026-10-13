@@ -98,6 +98,7 @@ def compute_metrics(df: pd.DataFrame) -> dict | None:
     idx_1m = max(0, len(c) - 21)
     m50 = ma50.iloc[-1]
     ma200_prev = ma200.iloc[-21] if len(ma200) > 21 else np.nan
+    ma50_prev = ma50.iloc[-21] if len(ma50) > 21 else np.nan
 
     return {
         "date": c.index[-1].strftime("%Y-%m-%d"),
@@ -121,6 +122,7 @@ def compute_metrics(df: pd.DataFrame) -> dict | None:
         "ret_1m": _f((last / c.iloc[idx_1m] - 1) * 100),
         "dist_ma50": _f((last / m50 - 1) * 100) if not np.isnan(m50) else None,
         "ma_slope200": _f((m200 / ma200_prev - 1) * 100) if not (np.isnan(m200) or np.isnan(ma200_prev)) else None,
+        "ma_slope50": _f((m50 / ma50_prev - 1) * 100) if not (np.isnan(m50) or np.isnan(ma50_prev)) else None,
         "bars": int(len(c)),
         "max_jump": _f(max_jump * 100) if not np.isnan(max_jump) else None,
         "suspect": suspect,
