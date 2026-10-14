@@ -164,13 +164,13 @@ tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;te
     <div class="filters">
       <div class="grp"><label>유형</label><select id="e_kind"><option value="">전체</option><option value="대표지수">대표지수 (S&amp;P500·나스닥100·다우·러셀)</option><option value="섹터·테마">섹터·테마</option><option value="배당">배당</option><option value="커버드콜">커버드콜</option><option value="레버리지·인버스">레버리지·인버스</option></select></div>
       <div class="grp"><label>환헤지</label><select id="e_fx"><option value="">전체</option><option value="open">환노출</option><option value="H">환헤지 (H)</option></select></div>
-      <div class="grp"><label>신호</label><select id="e_sig"><option value="">전체</option><option value="buy">매수 조건 충족</option><option value="buy1">매수 1개 미충족까지</option><option value="sell">매도 조건 충족</option></select></div>
+      <div class="grp"><label>신호</label><select id="e_sig"><option value="">전체</option><option value="buy">매수 신호 (게이트 포함)</option><option value="wait">게이트 대기 (종목 조건만)</option><option value="sell">매도 조건 충족</option></select></div>
       <div class="grp"><label>거래대금 20일 ≥</label><input type="number" id="e_to" value="5" min="0">억</div>
       <div class="grp"><label>검색</label><input type="text" id="e_q" placeholder="이름 / 코드" style="width:140px"></div>
       <div class="grp"><button class="ghost" id="e_reload">지금 동기화</button></div>
       <span id="e_note" class="note" style="margin:0"></span>
     </div>
-    <div class="note">국내 상장 ETF 중 <b>미국 주식시장을 추종하는 주식형</b>만 모았습니다 (네이버 ETF 목록의 해외주식형에서 이름이 미국·나스닥·S&amp;P·다우·필라델피아·러셀인 것, 환노출·환헤지(H) 모두 포함. 채권·혼합·통화·원자재형과 중국·일본·글로벌은 제외). 상단 국내/미국 선택과 무관하게 항상 같은 목록입니다. 조건·지표·확률은 매수/매도 스캔과 같은 계산이며, 기초자산이 미국이므로 <b>미국 설정</b>(스토캐스틱 시간대, 나스닥 RSI 시장 환경, 미국 기준율 모델, 200일선 3분위 기준)을 적용합니다. 모델은 개별주로 만든 것이라 ETF 에서는 참고용입니다. 국내 스캔(마감 후·장중 1시간)마다 같이 갱신됩니다. 종목을 클릭하면 차트가 펼쳐집니다.</div>
+    <div class="note">국내 상장 ETF 중 <b>미국 주식시장을 추종하는 주식형</b>만 모았습니다 (네이버 ETF 목록의 해외주식형에서 이름이 미국·나스닥·S&amp;P·다우·필라델피아·러셀인 것, 환노출·환헤지(H) 모두 포함. 채권·혼합·통화·원자재형과 중국·일본·글로벌은 제외). 상단 국내/미국 선택과 무관하게 항상 같은 목록입니다. 지표 계산은 매수/매도 스캔과 같고, 기초자산이 미국이라 <b>미국 설정</b>(스토캐스틱 시간대, 나스닥 RSI 시장 환경)을 씁니다. ETF 백테스트(미국 ETF 11종 2000~, 원화환산, 실제 국내 ETF 2010~) 결과에 맞춰 매수 신호는 다음처럼 정합니다. <b>환헤지(H)</b>: 스토캐스틱 + 150~200일선 밴드 + 나스닥 RSI 게이트. <b>환노출</b>: 스토캐스틱 + 게이트 (밴드는 환율에 흔들려 미적용). 게이트가 없으면 어느 쪽도 기준율과 같아지므로 "게이트 대기"로 따로 표시합니다. 200일선 기울기 필터는 지수 ETF 에선 효과가 없어 쓰지 않으며(기울기 열은 참고), 추천확률 대신 <b>ETF 실측 승률</b>을 보여줍니다. 국내 스캔(마감 후·장중 1시간)마다 같이 갱신됩니다. 종목을 클릭하면 차트가 펼쳐집니다.</div>
     <div class="summary" id="e_sum"></div>
     <div id="e_table"></div>
   </section>
@@ -630,18 +630,43 @@ function renderTable(mode){
 // ---------- ETF (국내상장 · 미국시장 추종) ----------
 // 상단 국내/미국 선택과 무관. 분석 기준은 미국 설정(스토캐 시간대 b_st_tf_us, 나스닥 RSI 게이트, 미국 모델·3분위)을 쓰므로 region 을 US 로 바꿔 평가한다.
 let ETF = null, etfTimer = null;
-const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['stoch','스토캐 %K 일 / 주'],['band','밴드 %'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['prob','추천확률 (미국 모델 참고)']];
+const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['stoch','스토캐 %K 일 / 주'],['band','밴드 %'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['stat','ETF 실측 승률 (60일 / 180일)','l']];
+// scripts/etf_conditions.py (2026-10-14): 다음날 시가 진입, 첫 충족일만. H=미국 ETF 11종 달러 2000~ (규칙 C: 주스토≤25&밴드±3&게이트), open=같은 ETF 원화환산 2004~ (규칙 A: 주스토≤25&게이트). nogate=같은 종목조건을 게이트 없이, base=모든 날.
+const ETF_STATS = {
+  H:    {rule:'스토캐스틱 + 밴드 + 게이트', n:198, win60:80, avg60:7.8, p10_60:-5.1, win180:85, avg180:15.7, p10_180:-5.7, nogate:{n:520, win60:69, avg60:3.3, win180:78}, base:{win60:67, avg60:2.6, win180:73, avg180:7.9}, src:'미국 ETF 11종 달러 기준 2000~2026'},
+  open: {rule:'스토캐스틱 + 게이트 (밴드 미적용)', n:345, win60:76, avg60:8.2, p10_60:-4.9, win180:91, avg180:20.2, p10_180:0.6, nogate:{n:569, win60:71, avg60:6.0, win180:84}, base:{win60:69, avg60:3.4, win180:81, avg180:10.5}, src:'미국 ETF 8종 원화환산 2004~2026 (실제 국내 ETF 2010~: 60일 79% +8.6%, 180일 83% +19.6%)'},
+};
+const ETF_UNTESTED = {'레버리지·인버스':1, '커버드콜':1};
 const ETF_FX = {open:['환노출',''], H:['환헤지',''], JPY:['엔화노출','']};
 const etfUS = s => ({...s, region:'US'});
+// ETF 매수 종목조건: 환헤지(H) = 스토캐 + 밴드, 환노출 = 스토캐만 (밴드는 환율 왜곡으로 미적용). 게이트(나스닥 RSI)는 별도.
+function etfBuyConds(s, vals){ const all = buyConds(s, vals); return s.fx==='H' ? all : all.filter(c=>c.key!=='ma'); }
 function etfEval(s0){
   const s = etfUS(s0);
-  const bc = buyConds(s).filter(c=>c.on), sc = sellConds(s).filter(c=>c.on);
+  const bc = etfBuyConds(s).filter(c=>c.on), sc = sellConds(s).filter(c=>c.on);
   const bmiss = bc.filter(c=>!c.hit).length, smiss = sc.filter(c=>!c.hit).length;
-  const buyHit = bc.length>0 && bmiss===0, sellHit = sc.length>0 && smiss===0;
-  let isNew = false; if(s.prev && buyHit){ isNew = buyConds(s, {...s, ...s.prev}).filter(c=>c.on).some(c=>!c.hit); }
-  return {s, s0, bc, sc, bmiss, smiss, buyHit, sellHit, isNew};
+  const condHit = bc.length>0 && bmiss===0, sellHit = sc.length>0 && smiss===0;
+  const gate = mktOK('US');
+  const buyHit = condHit && gate===true, waitGate = condHit && !buyHit;
+  let isNew = false; if(s.prev && condHit){ isNew = etfBuyConds(s, {...s, ...s.prev}).filter(c=>c.on).some(c=>!c.hit); }
+  return {s, s0, bc, sc, bmiss, smiss, condHit, gate, buyHit, waitGate, sellHit, isNew};
 }
-function etfCondInfo(s0){ const r = etfEval(s0); return `매수 조건 ${r.buyHit?'충족':r.bc.length?`${r.bc.length-r.bmiss}/${r.bc.length} 충족`:'-'} · 매도 조건 ${r.sellHit?'충족':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length} 충족`:'-'} (미국 설정 기준)`; }
+function etfCondInfo(s0){ const r = etfEval(s0); return `매수 ${r.buyHit?'신호 (게이트 포함 충족)':r.waitGate?'게이트 대기 (종목 조건 충족, 나스닥 RSI 미충족)':r.bc.length?`종목 조건 ${r.bc.length-r.bmiss}/${r.bc.length}`:'-'} · 매도 조건 ${r.sellHit?'충족':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length} 충족`:'-'}`; }
+function etfStatCell(r){
+  const s=r.s, ST = ETF_STATS[s.fx==='H'?'H':'open'];
+  const f = v => (v>=0?'+':'')+fmtN(v,1)+'%';
+  const base = `<span style="color:var(--muted);font-size:11px" title="${esc(ST.src)} · 조건 없이 아무 날 산 경우">기준율 ${ST.base.win60}% ${f(ST.base.avg60)} / ${ST.base.win180}% ${f(ST.base.avg180)}</span>`;
+  if(ETF_UNTESTED[s.kind]) return `<span class="pill" style="font-size:10px" title="레버리지·인버스·커버드콜은 백테스트에 넣지 않은 유형이라 실측치가 없습니다. 기초지수(1배) ETF 의 수치를 그대로 적용할 수 없습니다.">미검증 유형</span>`;
+  if(r.buyHit){
+    const tip = esc(`${ST.src} · ${ST.rule} · 진입 ${ST.n}회 · 60일 승률 ${ST.win60}% 평균 ${f(ST.avg60)} 하위10% ${f(ST.p10_60)} · 180일 승률 ${ST.win180}% 평균 ${f(ST.avg180)} 하위10% ${f(ST.p10_180)} · 기준율(모든 날) 60일 ${ST.base.win60}% / 180일 ${ST.base.win180}%. 지수 ETF 는 200일선 기울기 하위에서도 같은 수준(기울기 필터 미적용).`);
+    return `<span title="${tip}"><b style="font-size:15px;color:var(--buy)">${ST.win60}%</b> <span class="up">${f(ST.avg60)}</span> <span style="color:var(--muted)">/</span> <b style="color:var(--buy)">${ST.win180}%</b> <span class="up">${f(ST.avg180)}</span> <span style="color:var(--muted);font-size:11px">n=${ST.n}</span></span>`;
+  }
+  if(r.waitGate){
+    const tip = esc(`종목 조건은 충족했지만 나스닥 RSI ≤${$('#b_mkt_hi').value} 게이트가 아닙니다. 같은 종목 조건을 게이트 없이 샀을 때(${ST.nogate.n}회) 60일 승률 ${ST.nogate.win60}% 평균 ${f(ST.nogate.avg60)}, 180일 ${ST.nogate.win180}% — 기준율(${ST.base.win60}% / ${ST.base.win180}%)과 사실상 같아 우위가 없습니다.`);
+    return `<span title="${tip}"><span class="pill warn" style="font-size:10px">게이트 없인 우위 없음</span> <span style="color:var(--muted);font-size:11px">${ST.nogate.win60}% ${f(ST.nogate.avg60)} / ${ST.nogate.win180}% ≈ 기준율</span></span>`;
+  }
+  return base;
+}
 function etfInfoHTML(s){
   const row = (k,v) => `<tr><td style="color:var(--muted);white-space:nowrap">${k}</td><td class="num" style="text-align:left">${v}</td></tr>`;
   const prem = s.premium==null ? '-' : `<span class="${Math.abs(s.premium)>=1?'dn':''}">${s.premium>=0?'+':''}${fmtN(s.premium,2)}%</span>`;
@@ -675,18 +700,17 @@ function renderEtf(){
     if(q && !(s0.name.toLowerCase().includes(q) || s0.ticker.toLowerCase().includes(q))) continue;
     const r = etfEval(s0);
     if(sig==='buy' && !r.buyHit) continue;
-    if(sig==='buy1' && r.bmiss>1) continue;
+    if(sig==='wait' && !r.waitGate) continue;
     if(sig==='sell' && !r.sellHit) continue;
-    r.cp = consProb(r.s);
     rows.push(r);
   }
   const key = sortKey.etf, dir = sortDir.etf;
-  const val = r => key==='name' ? r.s.name : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='stoch' ? (tf==='w'?r.s.stoch_k_w:r.s.stoch_k) : key==='band' ? (r.s.band_pos==null?null:Math.abs(r.s.band_pos)) : key==='rsi' ? r.s.rsi_d : key==='sig' ? (r.buyHit?3:r.bmiss===1?2:r.sellHit?1:0) : key==='prob' ? (r.cp?.prob ?? null) : r.s[key];
-  const pv = r => r.cp?.prob ?? -1;
-  rows.sort((a,b)=>{ const x=val(a), y=val(b); if(x==null&&y==null) return pv(b)-pv(a); if(x==null) return 1; if(y==null) return -1; return ((x>y?1:x<y?-1:0)*dir) || (pv(b)-pv(a)); });  // 동률은 추천확률 높은 순
-  const buyN = rows.filter(r=>r.buyHit).length, sellN = rows.filter(r=>r.sellHit).length;
-  $('#e_sum').innerHTML = `<span>표시 <b>${rows.length}</b> / ${ETF.etfs.length}종목</span><span>매수 조건 충족 <b>${buyN}</b></span><span>매도 조건 충족 <b>${sellN}</b></span><span>기준일 ${ETF.etfs[0]?.date||''}</span><span>시장 환경: 나스닥 RSI <b>${fmtN(DATA?.indices?.IXIC?.rsi_d,1)}</b> <span class="pill ${gate?'ok':'no'}">${gate?'충족':gate===false?'미충족':'-'}</span></span>${ETF.failed?.length?`<span title="${esc(ETF.failed.join(', '))}">수집 실패 ${ETF.failed.length} (신규 상장 등)</span>`:''}`;
-  if(!rows.length){ $('#e_table').innerHTML = '<div class="empty">조건에 맞는 ETF 가 없습니다.</div>'; return; }
+  const val = r => key==='name' ? r.s.name : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='stoch' ? (tf==='w'?r.s.stoch_k_w:r.s.stoch_k) : key==='band' ? (r.s.band_pos==null?null:Math.abs(r.s.band_pos)) : key==='rsi' ? r.s.rsi_d : (key==='sig'||key==='stat') ? (r.buyHit?4:r.waitGate?3:r.bc.length&&r.bmiss===1?2:r.sellHit?1:0) : r.s[key];
+  const sv = r => (r.buyHit?4:r.waitGate?3:0)*1000 + (r.s.turnover20||0)/1e9;  // 동률: 신호 → 거래대금
+  rows.sort((a,b)=>{ const x=val(a), y=val(b); if(x==null&&y==null) return sv(b)-sv(a); if(x==null) return 1; if(y==null) return -1; return ((x>y?1:x<y?-1:0)*dir) || (sv(b)-sv(a)); });
+  const buyN = rows.filter(r=>r.buyHit).length, waitN = rows.filter(r=>r.waitGate).length, sellN = rows.filter(r=>r.sellHit).length;
+  $('#e_sum').innerHTML = `<span>표시 <b>${rows.length}</b> / ${ETF.etfs.length}종목</span><span>매수 신호 <b>${buyN}</b></span><span>게이트 대기 <b>${waitN}</b></span><span>매도 조건 충족 <b>${sellN}</b></span><span>기준일 ${ETF.etfs[0]?.date||''}</span><span>시장 환경: 나스닥 RSI <b>${fmtN(DATA?.indices?.IXIC?.rsi_d,1)}</b> <span class="pill ${gate?'ok':'no'}">${gate?'충족':gate===false?'미충족':'-'}</span></span>${ETF.failed?.length?`<span title="${esc(ETF.failed.join(', '))}">수집 실패 ${ETF.failed.length} (신규 상장 등)</span>`:''}`;
+  if(!rows.length){ $('#e_table').innerHTML = '<div class="empty">'+(sig==='buy'&&gate!==true?`지금은 나스닥 RSI ${fmtN(DATA?.indices?.IXIC?.rsi_d,1)} 로 시장 환경 게이트(≤${$('#b_mkt_hi').value}) 미충족이라 매수 신호가 없습니다. 종목 조건만 충족한 것은 "게이트 대기"에서 볼 수 있지만, 백테스트에서 게이트 없는 진입은 기준율과 같았습니다.`:'조건에 맞는 ETF 가 없습니다.')+'</div>'; return; }
   let h = '<table><thead><tr>' + ETF_COLS.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
   const hitCls = (v, hit) => v==null ? '' : hit ? 'hit' : '';
   for(const r of rows){ const s=r.s, s0=r.s0;
@@ -699,10 +723,10 @@ function renderEtf(){
       else if(k==='slope') v = slopeCell(s);
       else if(k==='slope50') v = slope50Cell(s);
       else if(k==='stoch') v = `<span class="${tf==='d'?hitCls(s.stoch_k, s.stoch_k<=stMax):''}">${fmtN(s.stoch_k,0)}</span> <span style="color:var(--muted)">/</span> <span class="${tf==='w'?hitCls(s.stoch_k_w, s.stoch_k_w<=stMax):''}">${fmtN(s.stoch_k_w,0)}</span>`;
-      else if(k==='band') v = `<span class="${hitCls(s.band_pos, Math.abs(s.band_pos)<=tol)}">${s.band_pos==null?'-':(s.band_pos>=0?'+':'')+fmtN(s.band_pos,1)+'%'}</span>`;
+      else if(k==='band') v = s.fx==='H' ? `<span class="${hitCls(s.band_pos, Math.abs(s.band_pos)<=tol)}">${s.band_pos==null?'-':(s.band_pos>=0?'+':'')+fmtN(s.band_pos,1)+'%'}</span>` : `<span style="color:var(--muted)" title="환노출형은 밴드 조건을 쓰지 않습니다 (원화 가격이 환율에 흔들려 백테스트에서 우위가 사라짐)">${s.band_pos==null?'-':(s.band_pos>=0?'+':'')+fmtN(s.band_pos,1)+'%'}</span>`;
       else if(k==='rsi') v = `<span class="${cellClass('sell',s,'rsi_d')}">${fmtN(s.rsi_d,0)}</span> <span style="color:var(--muted)">/</span> <span class="${cellClass('sell',s,'rsi_w')}">${fmtN(s.rsi_w,0)}</span>`;
-      else if(k==='sig') v = `<span class="pill ${r.buyHit?'ok':''}" title="스토캐스틱(${TFN[tf]}) ≤${stMax} · 150~200일선 밴드 ±${tol}%">매수 ${r.buyHit?'✓':r.bc.length?`${r.bc.length-r.bmiss}/${r.bc.length}`:'-'}</span> <span class="pill ${r.sellHit?'no':''}" title="일봉 RSI ≥${$('#s_rd_min').value} · 주봉 RSI ${$('#s_rw_lo').value}~${$('#s_rw_hi').value}">매도 ${r.sellHit?'✓':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length}`:'-'}</span>`;
-      else if(k==='prob') v = probCell(s, r.cp, gate);
+      else if(k==='sig') v = (r.buyHit ? `<span class="pill ok" style="font-weight:700" title="종목 조건(${s.fx==='H'?'스토캐스틱 '+TFN[tf]+' ≤'+stMax+' · 밴드 ±'+tol+'%':'스토캐스틱 '+TFN[tf]+' ≤'+stMax+', 환노출형은 밴드 미적용'}) + 나스닥 RSI 게이트 모두 충족">매수 ✓</span>` : r.waitGate ? `<span class="pill warn" title="종목 조건은 충족, 나스닥 RSI ≤${$('#b_mkt_hi').value} 게이트 미충족 (현재 ${fmtN(DATA?.indices?.IXIC?.rsi_d,1)})">게이트 대기</span>` : `<span class="pill" title="종목 조건: ${s.fx==='H'?'스토캐스틱 '+TFN[tf]+' ≤'+stMax+' · 밴드 ±'+tol+'%':'스토캐스틱 '+TFN[tf]+' ≤'+stMax+' (환노출형은 밴드 미적용)'}">매수 ${r.bc.length?`${r.bc.length-r.bmiss}/${r.bc.length}`:'-'}</span>`) + ` <span class="pill ${r.sellHit?'no':''}" title="일봉 RSI ≥${$('#s_rd_min').value} · 주봉 RSI ${$('#s_rw_lo').value}~${$('#s_rw_hi').value}">매도 ${r.sellHit?'✓':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length}`:'-'}</span>`;
+      else if(k==='stat') v = etfStatCell(r);
       else v = fmtN(s[k],1);
       return `<td class="${l||'num'}">${v}</td>`; }).join('')
       + (KIS_OK?`<td><button class="ghost ord" data-t="${s.ticker}" data-side="${r.sellHit&&!r.buyHit?'sell':'buy'}" style="padding:2px 8px;font-size:11px">${r.sellHit&&!r.buyHit?'매도':'매수'}</button></td>`:'') + `</tr>`;
