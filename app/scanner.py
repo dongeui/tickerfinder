@@ -38,7 +38,8 @@ CACHE_KEEP = 900  # 보관 행 수
 
 LOOKBACK_DAYS = 600  # 200일선 + 주봉 RSI 워밍업 + 백필(6월~) 여유
 INDICES = {"IXIC": "^IXIC", "GSPC": "^GSPC", "KS11": "^KS11", "KQ11": "^KQ11", "USDKRW": "KRW=X"}
-KR_PROXIES = {"NDX_KR": "133690", "SPX_KR": "360750"}  # 국내상장 미국지수 ETF (환노출만, 환헤지 제외)
+# 스캔 완료 후 호출되는 훅 (regions, intraday) — ETF 전용 스캔 등. main 에서 등록.
+AFTER_SCAN: list = []
 
 STATE = {
     "running": False, "stage": "", "done": 0, "total": 0,
@@ -357,7 +358,7 @@ def rebound_score(rows: list[dict]) -> None:
 
 
 # ---------- 스캔 ----------
-INDEX_REGION = {"IXIC": "US", "GSPC": "US", "USDKRW": "US", "KS11": "KR", "KQ11": "KR", "NDX_KR": "KR", "SPX_KR": "KR"}
+INDEX_REGION = {"IXIC": "US", "GSPC": "US", "USDKRW": "US", "KS11": "KR", "KQ11": "KR"}
 
 
 def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), intraday: bool = False) -> dict:
@@ -389,19 +390,11 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), int
 
         _set(stage="지수 수집")
         prev = load_results() if len(regions) < 2 else None
-        indices = {k: v for k, v in (prev or {}).get("indices", {}).items() if INDEX_REGION.get(k, "US") not in regions}
+        indices = {k: v for k, v in (prev or {}).get("indices", {}).items() if k in INDEX_REGION and INDEX_REGION[k] not in regions}
         for key, sym in INDICES.items():
             if INDEX_REGION[key] not in regions:
                 continue
             df = fetch_index(sym)
-            im = index_metrics(df) if df is not None else None
-            if im is not None:
-                indices[key] = im
-
-        for key, code in KR_PROXIES.items():
-            if INDEX_REGION[key] not in regions:
-                continue
-            df = fetch_kr_one(code)
             im = index_metrics(df) if df is not None else None
             if im is not None:
                 indices[key] = im
@@ -451,6 +444,11 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), int
                 if "date" in v and INDEX_REGION.get(k, "US") in regions:
                     idx_by_date.setdefault(v["date"], {})[k] = v
             write_history(rows_by_date, idx_by_date)
+        for hook in AFTER_SCAN:
+            try:
+                hook(regions, intraday)
+            except Exception:  # noqa: BLE001
+                log.exception("after-scan hook failed")
         _set(failed=failed, stage="완료")
         return result
     except Exception as e:  # noqa: BLE001

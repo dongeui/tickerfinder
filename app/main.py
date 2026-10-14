@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, autosell, backtest, chart, fills, kis, longhist, positions, profile, scanner
+from . import analysis, autosell, backtest, chart, etf, fills, kis, longhist, positions, profile, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,6 +35,7 @@ app = FastAPI(title="tickerfinder")
 
 @app.on_event("startup")
 def _start_scheduler():
+    scanner.AFTER_SCAN.append(etf.after_scan)
     if AUTO_SCAN_TIMES:
         threading.Thread(target=scanner.scheduler_loop, args=(AUTO_SCAN_TIMES, KOSDAQ_TOP, INTRADAY_SYNC), daemon=True).start()
         log.info("auto scan at %s KST (weekdays), intraday sync %s", AUTO_SCAN_TIMES, "on" if INTRADAY_SYNC else "off")
@@ -156,12 +157,29 @@ def ticker(ticker: str):
 def chart_series(ticker: str, tf: str = Query("d", pattern="^[dwm]$")):
     """상세 차트용 봉 데이터 (20년 일봉 + 최근 캐시, tf=d|w|m) + 50·150·200일선 + 보유 진입 표시."""
     t = ticker.upper()
-    meta = analysis.names_map().get(t, {})
+    meta = analysis.names_map().get(t) or etf.uni_entry(t) or {}
     res = chart.series(t, tf, meta.get("region"))
     if res is None:
         raise HTTPException(404, "가격 데이터 없음")
     res.update(name=meta.get("name", t), region=meta.get("region"))
     return res
+
+
+# ---------- 국내상장 미국 추종 ETF ----------
+@app.get("/api/etf")
+def etf_results():
+    """ETF 전용 스캔 결과(data/etf.json) + 진행 상태. 아직 없으면 etfs=[]."""
+    r = etf.load_results() or {"scanned_at": None, "etfs": [], "failed": []}
+    return {**r, "state": dict(etf.STATE)}
+
+
+@app.post("/api/etf/scan")
+def etf_scan(intraday: bool = False):
+    """ETF 만 다시 수집. intraday=true 면 장중 잠정값(미완성 봉 포함)."""
+    if etf.STATE["running"] or scanner.STATE["running"]:
+        raise HTTPException(409, "이미 스캔 중입니다")
+    threading.Thread(target=etf.run, kwargs={"intraday": intraday}, daemon=True).start()
+    return {"ok": True, "intraday": intraday}
 
 
 # ---------- 최근 60일 종가 (표의 미니 추세선) ----------

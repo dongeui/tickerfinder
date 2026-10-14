@@ -27,6 +27,9 @@ launchctl load ~/Library/LaunchAgents/com.tickerfinder.server.plist
 ```
 주의: 프로젝트가 `~/Desktop` 안에 있으면 macOS 보호 폴더(TCC) 때문에 launchd 에이전트가 조용히 실패한다(2026-10-12 확인). 프로젝트를 `~/Live` 같은 일반 폴더로 옮기고 plist 경로를 바꾸거나, 그냥 `nohup ./run.sh &` 로 띄운다(재부팅 시 다시 실행 필요).
 
+## ETF 탭 (국내상장 · 미국시장 추종, 2026-10-14)
+매수/매도 스캔 옆의 **ETF** 탭은 상단 국내/미국 선택과 무관하게(계좌·거래내역처럼) 항상 같은 목록을 보여준다. 대상은 네이버 ETF 목록(`fdr.StockListing('ETF/KR')`)의 해외주식형(Category 4) 중 이름에 미국·나스닥·S&P·다우존스·필라델피아·러셀이 들어가고 중국·일본·글로벌 등 비미국 단어가 없는 것(약 190개). 채권·혼합·통화·원자재형은 제외, **환노출·환헤지(H) 모두 포함**이며 유형(대표지수/섹터·테마/배당/커버드콜/레버리지·인버스)과 환헤지로 거를 수 있다. 지표·조건·추천확률은 매수/매도 스캔과 같은 계산(`app/etf.py` → `data/etf.json`)이고 기초자산이 미국이라 미국 설정(스토캐스틱 시간대·나스닥 RSI 게이트·미국 모델·3분위 기준)을 적용한다. 국내 스캔(마감 후·장중 1시간)이 끝날 때마다 `scanner.AFTER_SCAN` 훅으로 같이 갱신되고, 탭의 "지금 동기화"로 따로 돌릴 수도 있다. 행을 클릭하면 같은 차트가 펼쳐지고 회사 정보 대신 상품 정보(유형·환헤지·NAV 괴리·거래대금)가 나온다. 예전 지수 카드에 있던 TIGER 나스닥100/S&P500 환노출 카드는 이 탭으로 흡수해 없앴다.
+
 ## 장기 백테스트 (추천확률)
 상단 "장기 백테스트 갱신" 버튼 → 유니버스 전 종목 + 나스닥/코스피 약 20년(`LONG_YEARS`, 기본 20) 일봉을 yfinance로 받아(`data/prices10y`, 국내도 `.KS/.KQ` 수정주가) 종목별로 "시장 게이트 + 종목 조건"이 성립한 진입일의 이후 20/60/90/180/360거래일 성과를 계산한다. 약 2분 수집 + 1분 계산.
 - 매수 시점은 기본 **신호 다음 거래일 시가**(실제 운용과 동일, 보유기간은 매수일부터). `entry=close`로 신호일 종가(이론값) 계산도 가능. 두 결과 차이는 0.1%p 미만(다음날 시가 갭 평균 +0.03%).
@@ -100,6 +103,7 @@ uv run python -m app.backfill 2026-06-01 2026-10-11 [--overwrite]
 | `data/results.json` | 최신 스캔 결과 (전체 지표) |
 | `data/history/YYYY-MM-DD.json` | 날짜별 스냅샷 (리포트 원천) |
 | `data/universe.json` | 마지막 유니버스 |
+| `data/etf_universe.json`, `data/etf.json` | 국내상장 미국추종 ETF 목록(20시간 캐시)과 최신 ETF 스캔 결과 |
 | `data/watchlist.json` | 보유/관심 종목 |
 | `data/prices10y/*.parquet` | 장기(약 20년) 일봉 (백테스트 전용, yfinance 수정주가) |
 | `data/backtest/*.json` | 임계값별 장기 백테스트 결과 |
@@ -110,4 +114,4 @@ uv run python -m app.backfill 2026-06-01 2026-10-11 [--overwrite]
 - 종목 리스트: KRX(FDR), S&P500(위키), Nasdaq-100(나스닥 공식 API → stockanalysis → 위키 순 폴백).
 
 ## API
-`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/profile/{ticker}[?force=true]` (yfinance `Ticker.info` 개요·재무, `data/profiles/` 7일 캐시, 실패 시 stale 캐시), `/api/sparks`, `/api/backtest`, `/api/watchlist`
+`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/profile/{ticker}[?force=true]` (yfinance `Ticker.info` 개요·재무, `data/profiles/` 7일 캐시, 실패 시 stale 캐시), `/api/etf` (ETF 스캔 결과+상태), `POST /api/etf/scan?intraday=`, `/api/sparks`, `/api/backtest`, `/api/watchlist`

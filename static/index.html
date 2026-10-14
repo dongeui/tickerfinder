@@ -118,6 +118,7 @@ tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;te
   <div class="tabs">
     <button data-tab="buy" class="on">매수 스캔</button>
     <button data-tab="sell">매도 스캔</button>
+    <button data-tab="etf">ETF</button>
     <button data-tab="report">리포트</button>
     <button data-tab="acct">계좌</button>
     <button data-tab="trades">거래내역</button>
@@ -156,6 +157,22 @@ tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;te
     <div class="summary" id="s_sum"></div>
     <div class="chart" id="s_detail" style="display:none;margin-bottom:10px"><h3 class="dtitle"></h3><div class="dchart"></div></div>
     <div id="s_table"></div>
+  </section>
+
+  <!-- ===== ETF (국내상장 · 미국 추종) ===== -->
+  <section class="panel" id="tab-etf">
+    <div class="filters">
+      <div class="grp"><label>유형</label><select id="e_kind"><option value="">전체</option><option value="대표지수">대표지수 (S&amp;P500·나스닥100·다우·러셀)</option><option value="섹터·테마">섹터·테마</option><option value="배당">배당</option><option value="커버드콜">커버드콜</option><option value="레버리지·인버스">레버리지·인버스</option></select></div>
+      <div class="grp"><label>환헤지</label><select id="e_fx"><option value="">전체</option><option value="open">환노출</option><option value="H">환헤지 (H)</option></select></div>
+      <div class="grp"><label>신호</label><select id="e_sig"><option value="">전체</option><option value="buy">매수 조건 충족</option><option value="buy1">매수 1개 미충족까지</option><option value="sell">매도 조건 충족</option></select></div>
+      <div class="grp"><label>거래대금 20일 ≥</label><input type="number" id="e_to" value="5" min="0">억</div>
+      <div class="grp"><label>검색</label><input type="text" id="e_q" placeholder="이름 / 코드" style="width:140px"></div>
+      <div class="grp"><button class="ghost" id="e_reload">지금 동기화</button></div>
+      <span id="e_note" class="note" style="margin:0"></span>
+    </div>
+    <div class="note">국내 상장 ETF 중 <b>미국 주식시장을 추종하는 주식형</b>만 모았습니다 (네이버 ETF 목록의 해외주식형에서 이름이 미국·나스닥·S&amp;P·다우·필라델피아·러셀인 것, 환노출·환헤지(H) 모두 포함. 채권·혼합·통화·원자재형과 중국·일본·글로벌은 제외). 상단 국내/미국 선택과 무관하게 항상 같은 목록입니다. 조건·지표·확률은 매수/매도 스캔과 같은 계산이며, 기초자산이 미국이므로 <b>미국 설정</b>(스토캐스틱 시간대, 나스닥 RSI 시장 환경, 미국 기준율 모델, 200일선 3분위 기준)을 적용합니다. 모델은 개별주로 만든 것이라 ETF 에서는 참고용입니다. 국내 스캔(마감 후·장중 1시간)마다 같이 갱신됩니다. 종목을 클릭하면 차트가 펼쳐집니다.</div>
+    <div class="summary" id="e_sum"></div>
+    <div id="e_table"></div>
   </section>
 
   <!-- ===== 계좌 (한국투자증권) ===== -->
@@ -249,7 +266,7 @@ const MKT_REGION = {IXIC:'US', GSPC:'US', KS11:'KR', KQ11:'KR'};
 let STREAK = {buy:{}, sell:{}};
 let SPARK = {}, BT = null, BT2 = null, btTimer = null, bt2Timer = null, RSID = null, PM = undefined; // PM: undefined=로딩중, false=없음/실패, object=모델
 const TFN = {d:'일봉', w:'주봉', m:'월봉'};
-let DATA = null, WATCH = [], sortKey = {buy:'prob', sell:'rsi_d'}, sortDir = {buy:-1, sell:-1};
+let DATA = null, WATCH = [], sortKey = {buy:'prob', sell:'rsi_d', etf:'sig'}, sortDir = {buy:-1, sell:-1, etf:-1};
 
 // ---------- 공통 필터 (지역, 거래대금, 검색) ----------
 const commonHTML = p => `
@@ -277,6 +294,7 @@ function openTab(name){
   if(name==='report') loadReport();
   if(name==='acct') loadAcct();
   if(name==='trades') loadTrades();
+  if(name==='etf') loadEtf();
   const want='#'+name+'/'+(MARKET||REGION); if(location.hash!==want) history.replaceState(null,'',want);
 }
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
@@ -413,7 +431,6 @@ function renderGauges(){
   const I = DATA.indices||{}; const ok = mktOK('US'), okK = mktOK('KR');
   const card = (n, x, extra='', cls='', key=null) => x ? `<div class="g ${cls} ${key?'click':''} ${key&&MARKET===key?'sel':''}" ${key?`data-mkt="${key}" title="클릭하면 아래 표를 이 시장 종목으로 좁힙니다"`:''}><div class="t">${n} <span style="float:right">${x.date||''}${(DATA.synced_at&&DATA.synced_at[MKT_REGION[key]||REGION]||{}).partial?' ⏱':''}</span></div><div class="v">${fmtN(x.rsi_d,1)}</div>
       <div class="s">스토캐 %K ${fmtN(x.stoch_k,1)} · 주봉 RSI ${fmtN(x.rsi_w,1)} · 종가 ${fmtN(x.close,0)} ${x.chg==null?'':`<span class="${x.chg>=0?'up':'dn'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`}${extra}</div></div>` : '';
-  const gap = (a,b) => (a&&b&&a.rsi_d!=null&&b.rsi_d!=null) ? `<div style="margin-top:4px"><span class="pill">나스닥 RSI와 차이 ${(a.rsi_d-b.rsi_d)>=0?'+':''}${fmtN(a.rsi_d-b.rsi_d,1)}</span></div>` : '';
   let h = rsiDistCard();
   if(REGION==='US'){
     h += card('나스닥 RSI(14)', I.IXIC, `<div style="margin-top:4px"><span class="pill ${ok?'ok':'no'}">매수 환경 ${ok?'충족':'미충족'} (RSI ≤ ${$('#b_mkt_hi').value})</span></div>`, ok?'ok':'', 'IXIC');
@@ -425,8 +442,6 @@ function renderGauges(){
   }
   if(I.USDKRW && REGION==='US'){ const x=I.USDKRW; h += `<div class="g"><div class="t">원/달러 환율 <span style="float:right">${x.date||''}</span></div><div class="v">${fmtN(x.close,1)}</div>
       <div class="s">${x.chg==null?'':`<span class="${x.chg>=0?'dn':'up'}">${x.chg>=0?'+':''}${fmtN(x.chg,2)}%</span>`} · RSI ${fmtN(x.rsi_d,1)} · 1M ${x.ret_1m==null?'-':(x.ret_1m>=0?'+':'')+fmtN(x.ret_1m,1)+'%'} · 200일선 대비 ${x.band_pos==null?'-':(x.band_pos>=0?'+':'')+fmtN(x.band_pos,1)+'%'}<div style="margin-top:4px;color:var(--muted)">환율이 높을수록(원화 약세) 반등 시 환차손 위험 → 환헤지 유리</div></div></div>`; }
-  if(I.NDX_KR && REGION==='US'){ h += card('TIGER 미국나스닥100 (국내상장·환노출)', I.NDX_KR, gap(I.NDX_KR, I.IXIC)); }
-  if(I.SPX_KR && REGION==='US'){ h += card('TIGER 미국S&P500 (국내상장·환노출)', I.SPX_KR, gap(I.SPX_KR, I.GSPC).replace('나스닥 RSI','S&P500 RSI')); }
   $('#gauges').innerHTML = h;
   $('#gauges').querySelectorAll('.g.click').forEach(g=>g.onclick=()=>setMarket(g.dataset.mkt));
   ['b','s'].forEach(p=>{ $('#'+p+'_mkt_label').textContent = MARKET ? MKT_NAMES[MARKET] : '전체'; $('#'+p+'_mkt_label').className = 'pill '+(MARKET?'ok':''); $('#'+p+'_mkt_clear').style.display = MARKET?'':'none'; });
@@ -612,6 +627,101 @@ function renderTable(mode){
   $('#'+p+'_table').querySelectorAll('button.ord').forEach(b=>b.onclick=ev=>{ ev.stopPropagation(); orderDraft(b.dataset.t, b.dataset.side); });
   $('#'+p+'_table').querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ ev.preventDefault(); showTicker(a.dataset.t, p); });
 }
+// ---------- ETF (국내상장 · 미국시장 추종) ----------
+// 상단 국내/미국 선택과 무관. 분석 기준은 미국 설정(스토캐 시간대 b_st_tf_us, 나스닥 RSI 게이트, 미국 모델·3분위)을 쓰므로 region 을 US 로 바꿔 평가한다.
+let ETF = null, etfTimer = null;
+const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['stoch','스토캐 %K 일 / 주'],['band','밴드 %'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['prob','추천확률 (미국 모델 참고)']];
+const ETF_FX = {open:['환노출',''], H:['환헤지',''], JPY:['엔화노출','']};
+const etfUS = s => ({...s, region:'US'});
+function etfEval(s0){
+  const s = etfUS(s0);
+  const bc = buyConds(s).filter(c=>c.on), sc = sellConds(s).filter(c=>c.on);
+  const bmiss = bc.filter(c=>!c.hit).length, smiss = sc.filter(c=>!c.hit).length;
+  const buyHit = bc.length>0 && bmiss===0, sellHit = sc.length>0 && smiss===0;
+  let isNew = false; if(s.prev && buyHit){ isNew = buyConds(s, {...s, ...s.prev}).filter(c=>c.on).some(c=>!c.hit); }
+  return {s, s0, bc, sc, bmiss, smiss, buyHit, sellHit, isNew};
+}
+function etfCondInfo(s0){ const r = etfEval(s0); return `매수 조건 ${r.buyHit?'충족':r.bc.length?`${r.bc.length-r.bmiss}/${r.bc.length} 충족`:'-'} · 매도 조건 ${r.sellHit?'충족':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length} 충족`:'-'} (미국 설정 기준)`; }
+function etfInfoHTML(s){
+  const row = (k,v) => `<tr><td style="color:var(--muted);white-space:nowrap">${k}</td><td class="num" style="text-align:left">${v}</td></tr>`;
+  const prem = s.premium==null ? '-' : `<span class="${Math.abs(s.premium)>=1?'dn':''}">${s.premium>=0?'+':''}${fmtN(s.premium,2)}%</span>`;
+  return `<div><div style="font-size:14px;font-weight:600;margin-bottom:4px">${esc(s.name||s.ticker)}</div>
+    <div style="margin-bottom:6px"><span class="pill">${esc(s.kind||'ETF')}</span> <span class="pill ${s.fx==='H'?'warn':''}">${(ETF_FX[s.fx]||['-'])[0]}</span>${s.brand?` <span class="pill">${esc(s.brand)}</span>`:''}</div>
+    <div class="note" style="margin:0">국내 상장 ETF 라 회사 정보 대신 상품 정보를 보여줍니다. 환헤지(H)는 원/달러 변동을 제거해 미국 지수 수익률만 따라가고, 환노출은 환율 변동이 수익에 더해집니다 (원화 약세면 유리, 원화 강세면 불리).</div></div>
+    <div><b>상품 한눈에</b><table style="margin-top:4px">${row('시가총액', fmtCap(s))}${row('20일 평균 거래대금', s.turnover20==null?'-':fmtN(s.turnover20/1e8,0)+'억')}${row('NAV / 괴리율', (s.nav==null?'-':fmtN(s.nav,0)+'원')+' / '+prem+' <span style="color:var(--muted);font-size:11px">(목록 받은 날 기준)</span>')}${row('종가', fmtN(s.close,0)+'원 '+(s.chg==null?'':`<span class="${s.chg>=0?'up':'dn'}">${s.chg>=0?'+':''}${fmtN(s.chg,2)}%</span>`))}${row('52주 고점 대비', s.from_high52==null?'-':fmtN(s.from_high52,1)+'%')}${row('1개월 / 6개월', (s.ret_1m==null?'-':(s.ret_1m>=0?'+':'')+fmtN(s.ret_1m,1)+'%')+' / '+(s.ret_6m==null?'-':(s.ret_6m>=0?'+':'')+fmtN(s.ret_6m,1)+'%'))}${row('일봉 수 (상장 후)', s.bars??'-')}</table>
+    <div style="color:var(--muted);font-size:11px;margin-top:6px">출처: 네이버 금융 ETF 목록·일봉 (FinanceDataReader)</div></div>`;
+}
+async function loadEtf(force){
+  clearTimeout(etfTimer);
+  if(ETF && !force){ renderEtf(); return; }
+  try{ ETF = await (await fetch('/api/etf')).json(); }catch(e){ $('#e_table').innerHTML='<div class="empty">ETF 데이터 로드 실패</div>'; return; }
+  renderEtf();
+  if(ETF.state?.running) etfTimer = setTimeout(()=>loadEtf(true), 3000);
+}
+function renderEtf(){
+  if(!ETF) return;
+  const st = ETF.state||{};
+  $('#e_reload').disabled = !!st.running;
+  $('#e_note').innerHTML = st.running ? `${esc(st.stage||'동기화 중')} ${st.total?`${st.done}/${st.total}`:''}` : `${ETF.scanned_at?'동기화 '+ETF.scanned_at.replace('T',' ').slice(0,16):'아직 동기화 전'}${ETF.partial?' <span title="장중 잠정값 (현재가 기준, 마감 후 확정)">⏱ 장중</span>':''}${st.error?' · 오류: '+esc(st.error):''}`;
+  if(!ETF.etfs.length){ $('#e_table').innerHTML = '<div class="empty">아직 ETF 데이터가 없습니다. "지금 동기화"를 누르세요.</div>'; $('#e_sum').innerHTML=''; return; }
+  const kind=$('#e_kind').value, fx=$('#e_fx').value, sig=$('#e_sig').value, toMin=(+$('#e_to').value||0)*1e8, q=$('#e_q').value.trim().toLowerCase();
+  disposeChart('e');
+  const gate = mktOK('US'), tf = stochTf('US');
+  const rows = [];
+  for(const s0 of ETF.etfs){
+    if(kind && s0.kind!==kind) continue;
+    if(fx && (fx==='H' ? s0.fx!=='H' : s0.fx==='H')) continue;
+    if((s0.turnover20||0) < toMin) continue;
+    if(q && !(s0.name.toLowerCase().includes(q) || s0.ticker.toLowerCase().includes(q))) continue;
+    const r = etfEval(s0);
+    if(sig==='buy' && !r.buyHit) continue;
+    if(sig==='buy1' && r.bmiss>1) continue;
+    if(sig==='sell' && !r.sellHit) continue;
+    r.cp = consProb(r.s);
+    rows.push(r);
+  }
+  const key = sortKey.etf, dir = sortDir.etf;
+  const val = r => key==='name' ? r.s.name : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='stoch' ? (tf==='w'?r.s.stoch_k_w:r.s.stoch_k) : key==='band' ? (r.s.band_pos==null?null:Math.abs(r.s.band_pos)) : key==='rsi' ? r.s.rsi_d : key==='sig' ? (r.buyHit?3:r.bmiss===1?2:r.sellHit?1:0) : key==='prob' ? (r.cp?.prob ?? null) : r.s[key];
+  const pv = r => r.cp?.prob ?? -1;
+  rows.sort((a,b)=>{ const x=val(a), y=val(b); if(x==null&&y==null) return pv(b)-pv(a); if(x==null) return 1; if(y==null) return -1; return ((x>y?1:x<y?-1:0)*dir) || (pv(b)-pv(a)); });  // 동률은 추천확률 높은 순
+  const buyN = rows.filter(r=>r.buyHit).length, sellN = rows.filter(r=>r.sellHit).length;
+  $('#e_sum').innerHTML = `<span>표시 <b>${rows.length}</b> / ${ETF.etfs.length}종목</span><span>매수 조건 충족 <b>${buyN}</b></span><span>매도 조건 충족 <b>${sellN}</b></span><span>기준일 ${ETF.etfs[0]?.date||''}</span><span>시장 환경: 나스닥 RSI <b>${fmtN(DATA?.indices?.IXIC?.rsi_d,1)}</b> <span class="pill ${gate?'ok':'no'}">${gate?'충족':gate===false?'미충족':'-'}</span></span>${ETF.failed?.length?`<span title="${esc(ETF.failed.join(', '))}">수집 실패 ${ETF.failed.length} (신규 상장 등)</span>`:''}`;
+  if(!rows.length){ $('#e_table').innerHTML = '<div class="empty">조건에 맞는 ETF 가 없습니다.</div>'; return; }
+  let h = '<table><thead><tr>' + ETF_COLS.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
+  const hitCls = (v, hit) => v==null ? '' : hit ? 'hit' : '';
+  for(const r of rows){ const s=r.s, s0=r.s0;
+    const stMax=+$('#b_st_max').value, tol=+$('#b_ma_tol').value;
+    h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 상세 차트 펼치기/접기">` + ETF_COLS.map(([k,n,l])=>{
+      let v;
+      if(k==='name') v = `<div>${esc(s.name)} <span style="color:var(--muted);font-size:11px">${s.ticker}</span> <span class="pill" style="font-size:10px">${esc(s.kind)}</span> <span class="pill ${s.fx==='H'?'warn':''}" style="font-size:10px">${(ETF_FX[s.fx]||['-'])[0]}</span>${r.isNew?'<span class="new">NEW</span>':''}${s.suspect?' <span class="pill no" title="최근 250봉 내 하루 ±50% 이상 점프">의심</span>':''}</div><div style="font-size:11px;color:var(--muted)" class="num">${fmtN(s.close,0)} <span class="${s.chg>=0?'up':'dn'}">${s.chg==null?'':(s.chg>=0?'+':'')+fmtN(s.chg,1)+'%'}</span>${s.partial?' <span title="장중 잠정값">⏱</span>':''}${s.premium!=null?` · NAV 괴리 ${s.premium>=0?'+':''}${fmtN(s.premium,2)}%`:''}</div>`;
+      else if(k==='marcap') v = fmtCap(s0);
+      else if(k==='trend') v = trendText(s);
+      else if(k==='slope') v = slopeCell(s);
+      else if(k==='slope50') v = slope50Cell(s);
+      else if(k==='stoch') v = `<span class="${tf==='d'?hitCls(s.stoch_k, s.stoch_k<=stMax):''}">${fmtN(s.stoch_k,0)}</span> <span style="color:var(--muted)">/</span> <span class="${tf==='w'?hitCls(s.stoch_k_w, s.stoch_k_w<=stMax):''}">${fmtN(s.stoch_k_w,0)}</span>`;
+      else if(k==='band') v = `<span class="${hitCls(s.band_pos, Math.abs(s.band_pos)<=tol)}">${s.band_pos==null?'-':(s.band_pos>=0?'+':'')+fmtN(s.band_pos,1)+'%'}</span>`;
+      else if(k==='rsi') v = `<span class="${cellClass('sell',s,'rsi_d')}">${fmtN(s.rsi_d,0)}</span> <span style="color:var(--muted)">/</span> <span class="${cellClass('sell',s,'rsi_w')}">${fmtN(s.rsi_w,0)}</span>`;
+      else if(k==='sig') v = `<span class="pill ${r.buyHit?'ok':''}" title="스토캐스틱(${TFN[tf]}) ≤${stMax} · 150~200일선 밴드 ±${tol}%">매수 ${r.buyHit?'✓':r.bc.length?`${r.bc.length-r.bmiss}/${r.bc.length}`:'-'}</span> <span class="pill ${r.sellHit?'no':''}" title="일봉 RSI ≥${$('#s_rd_min').value} · 주봉 RSI ${$('#s_rw_lo').value}~${$('#s_rw_hi').value}">매도 ${r.sellHit?'✓':r.sc.length?`${r.sc.length-r.smiss}/${r.sc.length}`:'-'}</span>`;
+      else if(k==='prob') v = probCell(s, r.cp, gate);
+      else v = fmtN(s[k],1);
+      return `<td class="${l||'num'}">${v}</td>`; }).join('')
+      + (KIS_OK?`<td><button class="ghost ord" data-t="${s.ticker}" data-side="${r.sellHit&&!r.buyHit?'sell':'buy'}" style="padding:2px 8px;font-size:11px">${r.sellHit&&!r.buyHit?'매도':'매수'}</button></td>`:'') + `</tr>`;
+  }
+  $('#e_table').innerHTML = h + '</tbody></table>';
+  $('#e_table').querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; if(sortKey.etf===k) sortDir.etf*=-1; else {sortKey.etf=k; sortDir.etf=k==='name'?1:-1;} renderEtf(); });
+  $('#e_table').querySelectorAll('tr[data-t]').forEach(tr=>tr.onclick=ev=>{ if(ev.target.closest('a')||ev.target.closest('button')) return; toggleRow(tr, tr.dataset.t, 'e'); });
+  restoreRow('e');
+  $('#e_table').querySelectorAll('button.ord').forEach(b=>b.onclick=ev=>{ ev.stopPropagation(); orderDraft(b.dataset.t, b.dataset.side); });
+}
+['#e_kind','#e_fx','#e_sig','#e_to','#e_q'].forEach(id=>{ const el=$(id); el.addEventListener(id==='#e_q'||id==='#e_to'?'input':'change', ()=>renderEtf()); });
+$('#e_reload').onclick = async ()=>{
+  const kst = new Date(Date.now() + (9*60 + new Date().getTimezoneOffset())*60000); const hm = kst.getHours()*100 + kst.getMinutes();
+  const intraday = kst.getDay()>=1 && kst.getDay()<=5 && hm>=900 && hm<1805;
+  $('#e_reload').disabled = true;
+  try{ const r = await fetch('/api/etf/scan?intraday='+intraday, {method:'POST'}); if(!r.ok){ const j=await r.json().catch(()=>({})); alert(j.detail||('실패 '+r.status)); } }catch(e){ alert('실패: '+e.message); }
+  setTimeout(()=>loadEtf(true), 1500);
+};
+
 // ---------- 종목 개요·재무 (yfinance, /api/profile) ----------
 async function loadProfile(el, t, region){
   try{
@@ -682,9 +792,10 @@ async function chartData(t, tf){
   const d = await r.json(); CH_CACHE[k]=d; return d;
 }
 function buildChartBox(box, t, p){
-  const s = DATA?.stocks?.find(z=>z.ticker===t) || {ticker:t};
+  const isEtf = p==='e';
+  const s = (isEtf ? ETF?.etfs?.find(z=>z.ticker===t) : DATA?.stocks?.find(z=>z.ticker===t)) || {ticker:t};
   const st = STREAK.buy[t], ss = STREAK.sell[t];
-  const info = `매수 조건 ${st?.streak?st.streak+'일째 ('+st.since+'부터)':'미충족'}${st?.exited?' (오늘 이탈, '+st.prev_streak+'일 체류)':''} · 매도 조건 ${ss?.streak?ss.streak+'일째':'미충족'}`;
+  const info = isEtf ? etfCondInfo(s) : `매수 조건 ${st?.streak?st.streak+'일째 ('+st.since+'부터)':'미충족'}${st?.exited?' (오늘 이탈, '+st.prev_streak+'일 체류)':''} · 매도 조건 ${ss?.streak?ss.streak+'일째':'미충족'}`;
   box.innerHTML = `<div class="ctool">
     <b style="font-size:14px">${esc(s.name||t)}</b><span style="color:var(--muted);font-size:12px">${esc(t)}${s.market?' · '+esc(s.market):''}</span>
     <span class="seg ctf" title="봉 단위">${['d','w','m'].map(k=>`<button data-tf="${k}" class="${k===CH_TF?'on':''}">${TFN[k]}</button>`).join('')}</span>
@@ -702,7 +813,7 @@ function buildChartBox(box, t, p){
   box.querySelectorAll('.crange button').forEach(b=>b.onclick=()=>rangeChart(p, +b.dataset.r));
   box.querySelector('.cmore').addEventListener('toggle', ev=>{ if(ev.target.open && !ev.target.dataset.loaded){ ev.target.dataset.loaded='1'; loadMore(box.querySelector('.cmorebody'), t); } });
   drawChart(box, t, p, s.region);
-  loadProfile(box.querySelector('.cprof'), t, s.region);
+  if(isEtf) box.querySelector('.cprof').innerHTML = etfInfoHTML(s); else loadProfile(box.querySelector('.cprof'), t, s.region);
 }
 async function drawChart(box, t, p, region){
   const el = box.querySelector('.cdiv'), leg = box.querySelector('.clegend');
@@ -789,7 +900,7 @@ async function loadStreaks(){
   try{ const [b,s] = await Promise.all([fetch('/api/streaks?mode=buy&'+q).then(r=>r.json()), fetch('/api/streaks?mode=sell&'+q).then(r=>r.json())]); STREAK = {buy:b, sell:s}; }catch(e){}
 }
 let streakTimer=null;
-function render(){ if(!DATA) return; renderGauges(); renderTable('buy'); renderTable('sell'); }
+function render(){ if(!DATA) return; renderGauges(); renderTable('buy'); renderTable('sell'); if(ETF) renderEtf(); }
 function renderWithStreaks(){ clearTimeout(streakTimer); streakTimer=setTimeout(async()=>{ await loadStreaks(); render(); }, 400); }
 
 // ---------- 리포트 ----------
@@ -1065,7 +1176,7 @@ async function orderDraft(t, side, qtyHint){
 $('#od_cancel').onclick=()=>{ $('#odlg').style.display='none'; $('#od_ok').style.display=''; $('#od_cancel').textContent='취소'; };
 loadKisStatus().then(()=>render());
 
-function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && (m==='US'||m==='KR') && REGION!==m){ REGION=m; try{localStorage.setItem('tf_region',m)}catch(_){} syncRegionUI(); } else if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; REGION=MKT_REGION[m]; try{localStorage.setItem('tf_market',m); localStorage.setItem('tf_region',REGION)}catch(_){} syncRegionUI(); } render(); if(['buy','sell','report','acct','trades'].includes(t)) openTab(t); else if(t){ const tk=decodeURIComponent(t).toUpperCase(); for(const p of ['b','s']){ const tr=$('#'+p+'_table')?.querySelector(`tr[data-t="${CSS.escape(tk)}"]`); if(tr){ openTab(p==='b'?'buy':'sell'); closeRow(p); XP[p]=tk; openRow(tr, tk, p); tr.scrollIntoView({block:'nearest'}); break; } } } }
+function applyHash(){ const [t,m]=location.hash.slice(1).split('/'); if(m && (m==='US'||m==='KR') && REGION!==m){ REGION=m; try{localStorage.setItem('tf_region',m)}catch(_){} syncRegionUI(); } else if(m && MKT_NAMES[m] && MARKET!==m){ MARKET=m; REGION=MKT_REGION[m]; try{localStorage.setItem('tf_market',m); localStorage.setItem('tf_region',REGION)}catch(_){} syncRegionUI(); } render(); if(['buy','sell','etf','report','acct','trades'].includes(t)) openTab(t); else if(t){ const tk=decodeURIComponent(t).toUpperCase(); for(const p of ['b','s']){ const tr=$('#'+p+'_table')?.querySelector(`tr[data-t="${CSS.escape(tk)}"]`); if(tr){ openTab(p==='b'?'buy':'sell'); closeRow(p); XP[p]=tk; openRow(tr, tk, p); tr.scrollIntoView({block:'nearest'}); break; } } } }
 loadWatch(); loadRsiDist(); loadResults().finally(()=>{ pollStatus(); applyHash(); });
 window.addEventListener('hashchange', applyHash);
 </script>

@@ -29,7 +29,8 @@ def _uni_entry(ticker: str) -> dict | None:
                 return u
     except (OSError, json.JSONDecodeError):
         pass
-    return None
+    from . import etf  # 국내상장 ETF (universe.json 에 없음)
+    return etf.uni_entry(ticker)
 
 
 def _path(ticker: str) -> Path:
