@@ -27,6 +27,8 @@ launchctl load ~/Library/LaunchAgents/com.tickerfinder.server.plist
 ```
 주의: 프로젝트가 `~/Desktop` 안에 있으면 macOS 보호 폴더(TCC) 때문에 launchd 에이전트가 조용히 실패한다(2026-10-12 확인). 프로젝트를 `~/Live` 같은 일반 폴더로 옮기고 plist 경로를 바꾸거나, 그냥 `nohup ./run.sh &` 로 띄운다(재부팅 시 다시 실행 필요).
 
+추천확률 열에 「모델 불일치」가 뜨면 확률을 계산할 수 없다는 뜻이 아니라, 화면 임계값(스토캐·밴드·지수 RSI·시간대)이 `data/prob_model.json` 을 만든 값과 달라 그 모델의 숫자를 그대로 붙일 수 없어 숨긴 것이다. 매수 탭 안내에 어느 값이 다른지와 「모델값으로 되돌리기」 버튼이 뜬다. 바꾼 값으로 확률을 보려면 `uv run python scripts/pit_prob.py --rebuild`. (2026-10-14 수정: 숨은 게이트 하한 입력이 예전 값 30 으로 브라우저에 저장돼 있으면 영구히 불일치가 떴던 버그를 고침 — 숨은 입력은 저장하지 않고 설정 버전 6 으로 정리.)
+
 ## ETF 탭 (국내상장 · 미국시장 추종, 2026-10-14)
 매수/매도 스캔 옆의 **ETF** 탭은 상단 국내/미국 선택과 무관하게(계좌·거래내역처럼) 항상 같은 목록을 보여준다. 대상은 네이버 ETF 목록(`fdr.StockListing('ETF/KR')`)의 해외주식형(Category 4) 중 이름에 미국·나스닥·S&P·다우존스·필라델피아·러셀이 들어가고 중국·일본·글로벌 등 비미국 단어가 없는 것(약 190개). 채권·혼합·통화·원자재형은 제외, **환노출·환헤지(H) 모두 포함**이며 유형(대표지수/섹터·테마/배당/커버드콜/레버리지·인버스)과 환헤지로 거를 수 있다. 지표·조건·추천확률은 매수/매도 스캔과 같은 계산(`app/etf.py` → `data/etf.json`)이고 기초자산이 미국이라 미국 설정(스토캐스틱 시간대·나스닥 RSI 게이트·미국 모델·3분위 기준)을 적용한다. 국내 스캔(마감 후·장중 1시간)이 끝날 때마다 `scanner.AFTER_SCAN` 훅으로 같이 갱신되고, 탭의 "지금 동기화"로 따로 돌릴 수도 있다. 행을 클릭하면 같은 차트가 펼쳐지고 회사 정보 대신 상품 정보(유형·환헤지·NAV 괴리·거래대금)가 나온다.
 
@@ -130,4 +132,4 @@ uv run python -m app.backfill 2026-06-01 2026-10-11 [--overwrite]
 - 종목 리스트: KRX(FDR), S&P500(위키), Nasdaq-100(나스닥 공식 API → stockanalysis → 위키 순 폴백).
 
 ## API
-`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/profile/{ticker}[?force=true]` (yfinance `Ticker.info` 개요·재무, `data/profiles/` 7일 캐시, 실패 시 stale 캐시), `/api/etf` (ETF 스캔 결과+상태), `POST /api/etf/scan?intraday=`, `/api/sparks`, `/api/backtest`, `/api/watchlist`
+`/api/results`, `/api/status`, `POST /api/scan`, `/api/history`, `/api/signals?mode=buy|sell&require_mkt=`, `/api/streaks`, `/api/ticker/{ticker}`, `/api/chart/{ticker}?tf=d|w|m` (20년 일봉+최근 캐시 병합, 50·150·200일선, 보유 진입 표시), `/api/profile/{ticker}[?force=true]` (yfinance `Ticker.info` 개요·재무, `data/profiles/` 7일 캐시, 실패 시 stale 캐시; 사업 요약은 구글 번역 비공식 gtx 엔드포인트로 한글화해 `summary_ko` 로 캐시, 실패 시 영문), `/api/etf` (ETF 스캔 결과+상태), `POST /api/etf/scan?intraday=`, `/api/sparks`, `/api/backtest`, `/api/watchlist`

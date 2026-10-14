@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +34,61 @@ def _uni_entry(ticker: str) -> dict | None:
         pass
     from . import etf  # 국내상장 ETF (universe.json 에 없음)
     return etf.uni_entry(ticker)
+
+
+def translate_ko(text: str, timeout: float = 12.0) -> str | None:
+    """영문 사업 요약 → 한글 (구글 번역 비공식 gtx 엔드포인트, 키 불필요). 문장 단위로 1,500자씩 나눠 보낸다. 실패하면 None."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    sents = re.split(r"(?<=[.!?])\s+", text)
+    chunks, cur = [], ""
+    for sn in sents:
+        if len(cur) + len(sn) + 1 > 1500 and cur:
+            chunks.append(cur)
+            cur = sn
+        else:
+            cur = (cur + " " + sn).strip()
+    if cur:
+        chunks.append(cur)
+    out = []
+    for ch in chunks:
+        q = urllib.parse.urlencode({"client": "gtx", "sl": "en", "tl": "ko", "dt": "t", "q": ch})
+        req = urllib.request.Request("https://translate.googleapis.com/translate_a/single?" + q, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            j = json.loads(r.read())
+        out.append("".join(seg[0] for seg in j[0] if seg and seg[0]))
+    ko = " ".join(out).strip()
+    return ko or None
+
+
+def _save(ticker: str, data: dict) -> None:
+    try:
+        PROF_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _path(ticker).with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        tmp.replace(_path(ticker))
+    except OSError as e:
+        log.warning("profile cache write failed %s: %s", ticker, e)
+
+
+def _with_ko(ticker: str, data: dict | None) -> dict | None:
+    """사업 요약 한글 번역이 없으면 번역해서 캐시에 덧붙인다 (yfinance 재조회 없이). 번역 실패는 조용히 넘긴다."""
+    if not data or not data.get("longBusinessSummary") or data.get("summary_ko") or data.get("summary_ko_failed_at"):
+        return data
+    try:
+        ko = translate_ko(data["longBusinessSummary"])
+    except Exception as e:  # noqa: BLE001
+        log.warning("summary translate failed %s: %s", ticker, e)
+        ko = None
+    cached = _load(ticker) or data
+    if ko:
+        cached["summary_ko"] = ko
+        cached.pop("summary_ko_failed_at", None)
+    else:
+        cached["summary_ko_failed_at"] = datetime.now(KST).isoformat(timespec="seconds")  # 다음 요청 때 다시 시도하지 않도록 (재조회 시 초기화)
+    _save(ticker, cached)
+    return {**data, **{k: cached[k] for k in ("summary_ko", "summary_ko_failed_at") if k in cached}}
 
 
 def _path(ticker: str) -> Path:
@@ -69,7 +127,7 @@ def get(ticker: str, force: bool = False) -> dict | None:
         except (KeyError, ValueError):
             age = TTL_SEC + 1
         if age < TTL_SEC and cached.get("ok"):
-            return cached
+            return _with_ko(ticker, cached)
     u = _uni_entry(ticker)
     symbol = yf_symbol(u) if u else ticker
     try:
@@ -81,11 +139,7 @@ def get(ticker: str, force: bool = False) -> dict | None:
         return None
     if not fresh["ok"]:
         return {**cached, "stale": True} if cached else None
-    try:
-        PROF_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _path(ticker).with_suffix(".tmp")
-        tmp.write_text(json.dumps(fresh, ensure_ascii=False))
-        tmp.replace(_path(ticker))
-    except OSError as e:
-        log.warning("profile cache write failed %s: %s", ticker, e)
-    return fresh
+    if cached and cached.get("summary_ko") and cached.get("longBusinessSummary") == fresh.get("longBusinessSummary"):
+        fresh["summary_ko"] = cached["summary_ko"]  # 원문이 같으면 번역 재사용
+    _save(ticker, fresh)
+    return _with_ko(ticker, fresh)

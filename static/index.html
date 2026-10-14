@@ -278,9 +278,9 @@ $('#fCommonBuy').innerHTML = commonHTML('b');
 $('#fCommonSell').innerHTML = commonHTML('s');
 
 // ---------- 설정 저장/복원 ----------
-const SETTING_IDS = [...document.querySelectorAll('.filters input, .filters select')].map(e=>e.id);
+const SETTING_IDS = [...document.querySelectorAll('.filters input, .filters select')].filter(e=>e.type!=='hidden').map(e=>e.id);  // 숨은 b_mkt_lo(게이트 하한=0)는 저장하지 않음
 function saveSettings(){ const o={}; SETTING_IDS.forEach(id=>{const e=document.getElementById(id); o[id]=e.type==='checkbox'?e.checked:e.value}); try{localStorage.setItem('tf_settings',JSON.stringify(o))}catch(_){} }
-function loadSettings(){ try{const o=JSON.parse(localStorage.getItem('tf_settings')||'{}'); if(localStorage.getItem('tf_settings_v')!=='5'){ delete o.b_mkt_kr; delete o.b_st_tf; delete o.b_mkt_lo; localStorage.setItem('tf_settings_v','5'); } SETTING_IDS.forEach(id=>{ if(id in o){const e=document.getElementById(id); if(e.type==='checkbox')e.checked=o[id]; else e.value=o[id];} })}catch(_){} }
+function loadSettings(){ try{const o=JSON.parse(localStorage.getItem('tf_settings')||'{}'); if(localStorage.getItem('tf_settings_v')!=='6'){ delete o.b_mkt_kr; delete o.b_st_tf; delete o.b_mkt_lo; localStorage.setItem('tf_settings_v','6'); localStorage.setItem('tf_settings', JSON.stringify(o)); } SETTING_IDS.forEach(id=>{ if(id in o){const e=document.getElementById(id); if(e.type==='checkbox')e.checked=o[id]; else e.value=o[id];} })}catch(_){} }
 loadSettings();
 document.querySelectorAll('.filters input, .filters select').forEach(e=>e.addEventListener('input',()=>{saveSettings(); render(); syncCondStyle(); if(['b_st_max','b_st_tf_kr','b_st_tf_us','b_ma_tol','s_rd_min','s_rw_lo','s_rw_hi'].includes(e.id)) renderWithStreaks();}));
 function syncCondStyle(){ document.querySelectorAll('.grp.cond').forEach(g=>{const cb=g.querySelector('input[type=checkbox]'); if(cb.id==='b_mkt_kr') return; g.classList.toggle('off',!cb.checked)}); }
@@ -346,7 +346,16 @@ function btQuery(){ return new URLSearchParams({stoch_max:$('#b_st_max').value, 
 // ---------- 보수적 추천확률 (룩어헤드 없음, scripts/pit_prob.py → data/prob_model.json) ----------
 async function loadProbModel(){ try{ const r=await fetch('/api/prob_model'); PM = r.ok ? await r.json() : false; }catch(e){ PM=false; } render(); }
 // 모델이 만들어진 임계값과 화면 임계값이 같은가 (다르면 확률 표시가 맞지 않음 → 스크립트 재실행 필요)
-function pmMatch(){ if(!PM) return false; const q=PM.params; return +$('#b_st_max').value===+q.stoch_max && +$('#b_ma_tol').value===+q.band_tol && +$('#b_mkt_lo').value===+q.mkt_lo && +$('#b_mkt_hi').value===+q.mkt_hi && stochTf('KR')===(q.stoch_tf_kr||'d') && stochTf('US')===(q.stoch_tf_us||'w'); }
+function pmDiffs(){ if(!PM) return []; const q=PM.params, d=[];
+  if(+$('#b_st_max').value!==+q.stoch_max) d.push(['b_st_max', `스토캐스틱 ≤${$('#b_st_max').value} (모델 ${q.stoch_max})`, q.stoch_max]);
+  if(+$('#b_ma_tol').value!==+q.band_tol) d.push(['b_ma_tol', `밴드 ±${$('#b_ma_tol').value}% (모델 ${q.band_tol})`, q.band_tol]);
+  if(+$('#b_mkt_lo').value!==+q.mkt_lo) d.push(['b_mkt_lo', `게이트 하한 ${$('#b_mkt_lo').value} (모델 ${q.mkt_lo})`, q.mkt_lo]);
+  if(+$('#b_mkt_hi').value!==+q.mkt_hi) d.push(['b_mkt_hi', `지수 RSI ≤${$('#b_mkt_hi').value} (모델 ${q.mkt_hi})`, q.mkt_hi]);
+  if(stochTf('KR')!==(q.stoch_tf_kr||'d')) d.push(['b_st_tf_kr', `국내 스토캐 ${TFN[stochTf('KR')]} (모델 ${TFN[q.stoch_tf_kr||'d']})`, q.stoch_tf_kr||'d']);
+  if(stochTf('US')!==(q.stoch_tf_us||'w')) d.push(['b_st_tf_us', `미국 스토캐 ${TFN[stochTf('US')]} (모델 ${TFN[q.stoch_tf_us||'w']})`, q.stoch_tf_us||'w']);
+  return d; }
+function pmMatch(){ return !!PM && pmDiffs().length===0; }
+function pmReset(){ for(const [id,,v] of pmDiffs()){ $('#'+id).value = v; } saveSettings(); BT=null; BT2=null; render(); syncCondStyle(); renderWithStreaks(); loadBacktest(); }
 const COMBO_LAB = {C:'둘 다 충족', A:'스토캐스틱만', B:'밴드만'};
 const CELL_LAB = {s_lo:'기울기 하위', s_mid:'기울기 중위', s_hi:'기울기 상위'};
 function pmNote(){ if(!PM) return ''; const b=PM.base?.[REGION], c=PM.region?.[REGION]?.C; if(!b||!c) return ''; return `${REGION==='US'?'미국':'국내'} 기준 둘 다 충족 ${fmtN(b.C?.prob,0)}% (기울기 상위 ${fmtN(c.s_hi?.prob,0)} / 중위 ${fmtN(c.s_mid?.prob,0)} / 하위 ${fmtN(c.s_lo?.prob,0)}), 스토캐스틱만 ${fmtN(b.A?.prob,0)}%, 밴드만 ${fmtN(b.B?.prob,0)}% (${PM.params?.span?.[0]?.slice(0,4)}~${PM.params?.span?.[1]?.slice(0,4)}).`; }
@@ -561,7 +570,7 @@ function probCell(s, cp, gate){
   let h;
   if(PM===undefined) h = '<span style="color:var(--muted);font-size:11px">모델 로딩중</span>';
   else if(PM===false) h = '<span style="color:var(--muted);font-size:11px" title="data/prob_model.json 없음 — uv run python scripts/pit_prob.py">모델 없음</span>';
-  else if(!pmMatch()) h = '<span class="pill no" style="font-size:10px" title="화면 임계값(스토캐·밴드·시장 RSI·시간대)이 모델을 만든 값과 달라 확률을 표시하지 않습니다. 기본값으로 되돌리거나 scripts/pit_prob.py 를 다시 실행">모델 불일치</span>';
+  else if(!pmMatch()) h = `<span class="pill no" style="font-size:10px" title="${esc('화면 임계값이 확률 모델을 만든 값과 달라 확률을 표시하지 않습니다: '+pmDiffs().map(x=>x[1]).join(', ')+'. 위 안내의 「모델값으로 되돌리기」를 누르거나, 바꾼 임계값으로 모델을 다시 만들려면 uv run python scripts/pit_prob.py --rebuild')}">모델 불일치</span>`;
   else if(!cp) h = '-';
   else {
     const r=cp.row, b=cp.base, offGate = gate===false;
@@ -600,7 +609,8 @@ function renderTable(mode){
   const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length;
   $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목</span><span>신규 진입 <b>${newN}</b></span><span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
   if(mode==='buy'){ const ok=mktOK('US'), okK=mktOK('KR'); const ixr=DATA.indices?.IXIC?.rsi_d, ksr=DATA.indices?.KS11?.rsi_d;
-    $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. <b>추천확률(보수적)</b>은 20년 백테스트에서 그 지역·조건 조합(둘 다 / 스토캐스틱만 / 밴드만)으로 진입했을 때의 승률·반등확률 가중치를 통계적 하한으로 잡고, 200일선 기울기 3분위(상위/중위/하위)로 보정한 값입니다. 미래 데이터를 쓰지 않도록(룩어헤드 없이) 검증했고 예측치가 실제 승률을 넘지 않게 맞췄습니다. 종목 자체의 과거 진입 통계는 검증 결과 예측력이 없어 확률에 넣지 않고 "종목 과거"로만 참고 표시합니다. ' + pmNote() + ' 종목을 클릭하면 상세가 보입니다.'; }
+    $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. <b>추천확률(보수적)</b>은 20년 백테스트에서 그 지역·조건 조합(둘 다 / 스토캐스틱만 / 밴드만)으로 진입했을 때의 승률·반등확률 가중치를 통계적 하한으로 잡고, 200일선 기울기 3분위(상위/중위/하위)로 보정한 값입니다. 미래 데이터를 쓰지 않도록(룩어헤드 없이) 검증했고 예측치가 실제 승률을 넘지 않게 맞췄습니다. 종목 자체의 과거 진입 통계는 검증 결과 예측력이 없어 확률에 넣지 않고 "종목 과거"로만 참고 표시합니다. ' + pmNote() + ' 종목을 클릭하면 상세가 보입니다.' + (PM && !pmMatch() ? `<div style="margin-top:6px"><span class="pill no">모델 불일치</span> 화면 임계값이 확률 모델(${PM.params.span?.[0]?.slice(0,4)}~ 백테스트)을 만든 값과 달라 추천확률을 표시하지 않습니다: <b>${esc(pmDiffs().map(x=>x[1]).join(', '))}</b>. <button class="ghost" id="pm_reset" style="padding:1px 8px;font-size:11px">모델값으로 되돌리기</button> <span style="color:var(--muted)">(바꾼 값으로 확률을 보려면 터미널에서 <code>uv run python scripts/pit_prob.py --rebuild</code>)</span></div>` : '');
+    const pr=$('#pm_reset'); if(pr) pr.onclick=pmReset; }
   if(!rows.length){ const noS50 = mode==='buy' && $('#b_core_on').checked && !DATA.stocks.some(x=>x.region===REGION && x.ma_slope50!=null); const coreOn = mode==='buy' && $('#b_core_on').checked; $('#'+p+'_table').innerHTML='<div class="empty">'+(noS50?'50일선 기울기는 다음 스캔/동기화부터 계산됩니다. 상단 "지금 동기화"를 누르거나 필터를 끄세요.':coreOn?'조건 충족 종목 중 「200일선 상위 × 50일선 횡보 이상」인 종목이 오늘은 없습니다. 백테스트에서 이 조합은 전체 진입의 약 15%로 드뭅니다. 필터를 끄면 전체가 보입니다.':'조건을 만족하는 종목이 없습니다.')+'</div>' + renderExits(mode); return; }
   const cols = COLS[mode];
   let h = '<table><thead><tr>' + cols.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (mode==='buy'?'<th>시장</th>':'') + (near?'<th>충족</th>':'') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
@@ -754,6 +764,7 @@ async function loadProfile(el, t, region){
     el.innerHTML = profileHTML(p, region);
     const sm = el.querySelector('.cp-sum'), more = el.querySelector('.cp-more');
     if(more) more.onclick = ev=>{ ev.preventDefault(); sm.classList.toggle('open'); more.textContent = sm.classList.contains('open') ? '접기' : '더 보기'; };
+    const lang = el.querySelector('.cp-lang'); if(lang) lang.onclick = ev=>{ ev.preventDefault(); const showEn = !sm.dataset.showEn; sm.dataset.showEn = showEn ? '1' : ''; sm.textContent = showEn ? sm.dataset.en : sm.dataset.ko; lang.textContent = showEn ? '한글 번역 보기' : '원문(영문) 보기'; };
   }catch(e){ if(el.isConnected) el.innerHTML = '<div class="note">회사 정보를 받지 못했습니다 (야후 파이낸스 응답 없음)</div>'; }
 }
 function fmtMoney(v, cur){
@@ -787,8 +798,10 @@ function profileHTML(p, region){
   const head = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px"><b>재무 한눈에</b> <span class="pill ok">양호 ${ok}</span> <span class="pill ${warn.length?'warn':''}">주의 ${warn.length}${warn.length?': '+warn.map(x=>x[0]).join(', '):''}</span> <span style="color:var(--muted);font-size:11px">Yahoo Finance${p.mostRecentQuarter?' · 최근 분기 '+p.mostRecentQuarter:''} · 받은 날 ${(p.fetched_at||'').slice(0,10)}${p.stale?' (갱신 실패, 이전 값)':''}${region==='KR'?' · 국내는 야후 집계라 오차 가능':''}</span></div>`;
   const tags = [p.sector, p.industry].filter(Boolean).map(x=>`<span class="pill">${esc(x)}</span>`).join(' ');
   const meta = [p.country, p.fullTimeEmployees?`직원 ${fmtN(p.fullTimeEmployees,0)}명`:null, p.website?`<a href="${esc(p.website)}" target="_blank" rel="noopener" style="color:var(--acc)">${esc(p.website.replace(/^https?:\/\/(www\.)?/,''))}</a>`:null].filter(Boolean).join(' · ');
-  const sum = p.longBusinessSummary ? `<div class="cp-sum">${esc(p.longBusinessSummary)}</div>${p.longBusinessSummary.length>420?'<a href="#" class="cp-more" style="color:var(--acc);font-size:12px">더 보기</a>':''}` : '<div class="note">사업 요약 없음</div>';
-  return `<div class="cp-left"><div style="margin-bottom:6px"><b>${esc(p.longName||p.ticker)}</b> ${tags} <span style="color:var(--muted);font-size:11px;margin-left:4px">${meta}</span></div><div class="note" style="margin:0 0 2px">사업 요약 (영문, Yahoo Finance)</div>${sum}</div>
+  const ko = p.summary_ko, en = p.longBusinessSummary;
+  const sum = en ? `<div class="cp-sum" data-ko="${esc(ko||'')}" data-en="${esc(en)}">${esc(ko||en)}</div>${(ko||en).length>420?'<a href="#" class="cp-more" style="color:var(--acc);font-size:12px">더 보기</a>':''}${ko?' <a href="#" class="cp-lang" style="color:var(--muted);font-size:12px;margin-left:8px">원문(영문) 보기</a>':''}` : '<div class="note">사업 요약 없음</div>';
+  const sumLabel = en ? (ko ? '사업 요약 (Yahoo Finance 원문을 구글 번역으로 한글화 · 고유명사·용어 오역 가능)' : `사업 요약 (영문, Yahoo Finance${p.summary_ko_failed_at?' · 번역 실패, 다음 조회 때 재시도':' · 번역 중, 다시 열면 한글로 보입니다'})`) : '';
+  return `<div class="cp-left"><div style="margin-bottom:6px"><b>${esc(p.longName||p.ticker)}</b> ${tags} <span style="color:var(--muted);font-size:11px;margin-left:4px">${meta}</span></div><div class="note" style="margin:0 0 2px">${sumLabel}</div>${sum}</div>
     <div class="cp-right">${head}<table>${rows.map(([k,v])=>`<tr><td class="l" style="color:var(--muted);white-space:nowrap">${k}</td><td class="l num" style="white-space:normal">${v}</td></tr>`).join('')}</table>
     <div class="note" style="margin:4px 0 0">양호/주의는 단순 기준(영업이익률 15%/5%, 매출성장 5%/0, 부채/자본 60%/150%, 유동비율 1.5/1, FCF 부호, ROE 15%/5%)으로 표시한 참고값입니다.</div></div>`;
 }
