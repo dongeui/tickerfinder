@@ -98,8 +98,9 @@ def _fwd_table(c: pd.Series, o: pd.Series | None = None, entry: str = "next_open
     return out
 
 
-def _events_for(ticker: str, region: str, th: Thresholds, gate: dict[str, pd.Series], entry: str = "next_open") -> list[dict] | None:
-    df = load_long(ticker)
+def _events_for(ticker: str, region: str, th: Thresholds, gate: dict[str, pd.Series], entry: str = "next_open", df: pd.DataFrame | None = None) -> list[dict] | None:
+    if df is None:
+        df = load_long(ticker)
     if df is None or len(df) < 260:
         return None
     ser = compute_series(df)
@@ -180,6 +181,8 @@ def compute(th: Thresholds, use_kr_index: bool = True, entry: str = "next_open")
     if path.exists():
         try:
             _mem[key] = json.loads(path.read_text())
+            for k in list(_mem)[:-3]:
+                _mem.pop(k, None)
             return _mem[key]
         except Exception:  # noqa: BLE001
             pass
@@ -196,15 +199,15 @@ def compute(th: Thresholds, use_kr_index: bool = True, entry: str = "next_open")
         all_evs: dict[str, list[dict]] = {"KR": [], "US": []}
         first_dates = []
         for u in uni:
-            evs = _events_for(u["ticker"], u["region"], th, gate, entry)
+            df = load_long(u["ticker"])
+            evs = _events_for(u["ticker"], u["region"], th, gate, entry, df=df)
             _lock_set(done=STATE["done"] + 1)
+            if df is not None and len(df):
+                first_dates.append(df.index[0])
             if evs is None:
                 continue
             per[u["ticker"]] = {"region": u["region"], "events": evs}
             all_evs[u["region"]].extend(evs)
-            df = load_long(u["ticker"])
-            if df is not None:
-                first_dates.append(df.index[0])
         base = {reg: _hstats(evs) for reg, evs in all_evs.items()}
         base["ALL"] = _hstats(all_evs["KR"] + all_evs["US"])
         for reg in ("KR", "US", "ALL"):
@@ -225,6 +228,8 @@ def compute(th: Thresholds, use_kr_index: bool = True, entry: str = "next_open")
         res["sig"] = list(signature())
         atomic_write_text(path, json.dumps(res, ensure_ascii=False))
         _mem[key] = res
+        for k in list(_mem)[:-3]:  # 결과 하나가 10~20MB → 최근 3개만 메모리에
+            _mem.pop(k, None)
         _prune(res["sig"])
         _lock_set(stage="완료")
         return res
@@ -260,6 +265,8 @@ def cached(th: Thresholds, use_kr_index: bool, entry: str = "next_open") -> dict
     if path.exists():
         try:
             _mem[key] = json.loads(path.read_text())
+            for k in list(_mem)[:-3]:
+                _mem.pop(k, None)
             return _mem[key]
         except Exception:  # noqa: BLE001
             return None

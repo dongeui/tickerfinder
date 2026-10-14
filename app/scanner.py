@@ -59,6 +59,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+SCAN_LOCK = threading.Lock()  # run_scan 과 etf.run 이 공유: 같은 가격 캐시를 동시에 쓰지 않도록
 KEEP_PARTIAL = False  # 장중 동기화 모드: 미완성 봉을 지표 계산에는 쓰되 캐시/히스토리에는 저장하지 않음 (run_scan 이 설정)
 
 
@@ -135,7 +136,9 @@ def merge_cache(ticker: str, new: pd.DataFrame | None) -> pd.DataFrame | None:
     partial = df.iloc[-1:] if (KEEP_PARTIAL and ticker != "KRW=X" and is_partial_bar(df, region)) else None
     df = drop_partial_bar(df, region, force=True)
     try:
-        df.to_parquet(_cache_path(ticker))
+        tmp = _cache_path(ticker).with_suffix(".parquet.tmp")
+        df.to_parquet(tmp)
+        os.replace(tmp, _cache_path(ticker))  # 읽는 쪽이 반쯤 쓰인 파일을 보지 않도록
     except Exception as e:  # noqa: BLE001
         log.warning("cache write failed %s: %s", ticker, e)
     if partial is not None:
@@ -214,7 +217,12 @@ def _yf_batch(part: list[str], start: str) -> dict[str, pd.DataFrame]:
     for s in part:
         try:
             if isinstance(d.columns, pd.MultiIndex):
-                df = d[s] if s in d.columns.get_level_values(0) else d.droplevel(0, axis=1)
+                if s in d.columns.get_level_values(0):
+                    df = d[s]
+                elif len(part) == 1:
+                    df = d.droplevel(0, axis=1)
+                else:
+                    continue  # 배치에서 빠진 종목: 다른 종목 열을 합친 엉뚱한 표가 되지 않도록 건너뜀
             else:
                 df = d
             df = df.dropna(subset=["Close"])
@@ -368,8 +376,11 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), int
     결과 행에는 partial=True, 결과에는 지역별 synced_at 이 기록된다.
     """
     global KEEP_PARTIAL
+    if not SCAN_LOCK.acquire(blocking=False):
+        raise RuntimeError("scan already running")
     with _lock:
         if STATE["running"]:
+            SCAN_LOCK.release()
             raise RuntimeError("scan already running")
         STATE.update(running=True, stage="유니버스 구성", done=0, total=0, error=None, failed=[],
                      started_at=datetime.now(KST).isoformat(timespec="seconds"), finished_at=None,
@@ -458,6 +469,7 @@ def run_scan(kosdaq_top: int = 100, regions: tuple[str, ...] = ("KR", "US"), int
     finally:
         KEEP_PARTIAL = False
         _set(running=False, finished_at=datetime.now(KST).isoformat(timespec="seconds"))
+        SCAN_LOCK.release()
 
 
 def load_results() -> dict | None:
@@ -506,16 +518,46 @@ def due_intraday(now: datetime) -> tuple[str, ...] | None:
     return None
 
 
+SCAN_RUNS = DATA_DIR / "scan_runs.json"  # 정시 전체 스캔을 날짜별로 기록 (재시작·지연 후 따라잡기용)
+CATCHUP_HOURS = 4  # 정시를 놓쳤어도 이 시간 안이면 늦게라도 전체 스캔
+
+
+def _load_runs() -> dict[str, str]:
+    try:
+        return json.loads(SCAN_RUNS.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def due_full_scan(now: datetime, times: list[str], runs: dict[str, str]) -> str | None:
+    """오늘 아직 안 돈 정시 스캔 중 시각이 지났고 CATCHUP_HOURS 이내인 것."""
+    if now.weekday() >= 5:
+        return None
+    today = now.strftime("%Y-%m-%d")
+    for t in times:
+        if runs.get(t) == today:
+            continue
+        hh, mm = (int(x) for x in t.split(":"))
+        at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if at <= now < at + timedelta(hours=CATCHUP_HOURS):
+            return t
+    return None
+
+
 def scheduler_loop(times: list[str], kosdaq_top: int = 100, intraday: bool = True):
-    """매 30초 체크: 평일 지정 시각(KST)에 전체 스캔, 장중에는 시간별로 해당 지역만 잠정 동기화."""
+    """매 30초 체크: 평일 지정 시각(KST)에 전체 스캔(놓쳤으면 4시간 내 따라잡기), 장중에는 시간별로 해당 지역만 잠정 동기화."""
     last_run: dict[str, str] = {}
+    runs = _load_runs()
     while True:
         now = datetime.now(KST)
-        hm = now.strftime("%H:%M")
         key = now.strftime("%Y-%m-%d %H:%M")
-        if not STATE["running"]:
-            if now.weekday() < 5 and hm in times and last_run.get(hm) != now.strftime("%Y-%m-%d"):
-                last_run[hm] = now.strftime("%Y-%m-%d")
+        if not STATE["running"] and not SCAN_LOCK.locked():
+            if (t := due_full_scan(now, times, runs)):
+                runs[t] = now.strftime("%Y-%m-%d")
+                try:
+                    atomic_write_text(SCAN_RUNS, json.dumps(runs))
+                except OSError:
+                    pass
                 try:
                     run_scan(kosdaq_top)
                 except Exception:  # noqa: BLE001

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 
 import pandas as pd
@@ -53,7 +54,15 @@ def save_rule(rule: ExitRule) -> None:
     atomic_write_text(RULE_FILE, json.dumps(rule.__dict__, ensure_ascii=False, indent=1))
 
 
+_plock = threading.RLock()  # load(체결 반영 포함)·save 가 여러 스레드(화면·자동매도·체결대조)에서 겹치지 않도록
+
+
 def load_positions() -> dict[str, dict]:
+    with _plock:
+        return _load_positions()
+
+
+def _load_positions() -> dict[str, dict]:
     """포지션 파일을 읽고, 앱 주문 중 체결 대조(fills.reconcile)로 확인된 체결수량을 반영한다.
 
     주문 기록(orders.jsonl)의 filled_qty 중 아직 반영 안 된 만큼만 더하거나 뺀다 (pos[t]["fills"][odno] = 반영한 수량).
@@ -75,7 +84,7 @@ def load_positions() -> dict[str, dict]:
         if not odno or filled <= 0:
             continue
         t = o["ticker"]
-        applied = float(pos.get(t, {}).get("fills", {}).get(odno, 0))
+        applied = float(pos.get(t, {}).get("fills", {}).get(odno, 0) or pos.get("_applied", {}).get(odno, 0))
         delta = filled - applied
         if delta <= 0:
             continue
@@ -83,11 +92,17 @@ def load_positions() -> dict[str, dict]:
         if o["side"] == "buy":
             p = pos.setdefault(t, {"entry_date": o["at"][:10], "entry_px": px, "qty": 0, "note": f"앱 주문 체결 ({o.get('mode')})"})
             oldq = float(p.get("qty") or 0)
-            p["entry_px"] = round((float(p.get("entry_px") or px) * oldq + px * delta) / (oldq + delta), 4) if oldq else px
+            if oldq:
+                p["entry_px"] = round((float(p.get("entry_px") or px) * oldq + px * delta) / (oldq + delta), 4)
+            elif not p.get("entry_px"):  # 수량 없이 평단만 직접 입력해 둔 포지션은 평단을 덮어쓰지 않는다
+                p["entry_px"] = px
             p["qty"] = int(oldq + delta)
             p.setdefault("entry_date", o["at"][:10])
         else:
             if t not in pos:
+                # 추적 중이 아닌 종목의 매도 체결: 반영할 것은 없지만 '처리됨'으로 남겨 나중에 포지션을 추가했을 때 다시 차감되지 않게 한다
+                pos.setdefault("_applied", {})[odno] = int(filled)
+                changed = True
                 continue
             p = pos[t]
             if p.get("qty") is not None:
@@ -106,7 +121,8 @@ def load_positions() -> dict[str, dict]:
 
 
 def save_positions(pos: dict[str, dict]) -> None:
-    atomic_write_text(POS_FILE, json.dumps(pos, ensure_ascii=False, indent=1))
+    with _plock:
+        atomic_write_text(POS_FILE, json.dumps(pos, ensure_ascii=False, indent=1))
 
 
 def evaluate(ticker: str, entry_date: str | None, entry_px: float | None, rule: ExitRule, cur: dict | None = None,

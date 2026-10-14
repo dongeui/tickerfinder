@@ -130,7 +130,7 @@ def reconcile() -> dict:
 
 def reconcile_later(delay: float = 20) -> None:
     """주문 직후 호출: delay 초 뒤 한 번, 그 뒤 loop 가 이어서 본다."""
-    threading.Timer(delay, reconcile).start()
+    t = threading.Timer(delay, reconcile); t.daemon = True; t.start()
 
 
 def loop() -> None:

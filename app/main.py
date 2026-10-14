@@ -12,6 +12,7 @@ import pandas as pd
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -31,6 +32,7 @@ AUTO_SCAN_TIMES = [t.strip() for t in os.environ.get("AUTO_SCAN_TIMES", "18:10,0
 INTRADAY_SYNC = os.environ.get("INTRADAY_SYNC", "1") not in ("0", "false", "no")
 
 app = FastAPI(title="tickerfinder")
+app.add_middleware(GZipMiddleware, minimum_size=1024)  # results/sparks/history 가 1MB 안팎 → 전송량 1/4~1/6
 
 
 @app.on_event("startup")

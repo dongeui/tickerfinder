@@ -148,7 +148,7 @@ def build_universe(kosdaq_top: int = 100, use_cache_on_fail: bool = True) -> lis
     cache = DATA_DIR / "universe.json"
     try:
         uni = kr_universe(kosdaq_top) + us_universe()
-        cache.write_text(json.dumps(uni, ensure_ascii=False))
+        tmp = cache.with_suffix(".tmp"); tmp.write_text(json.dumps(uni, ensure_ascii=False)); tmp.replace(cache)  # 다른 스레드가 반쯤 쓰인 파일을 읽지 않도록
         return uni
     except Exception:
         if use_cache_on_fail and cache.exists():

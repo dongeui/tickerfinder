@@ -96,7 +96,7 @@ def today_orders(region: str, tdate: str, hist: list[dict] | None = None) -> lis
     out = []
     for run_ in hist if hist is not None else history(200):
         if run_.get("region") == region and run_.get("trade_date") == tdate:
-            out += [d for d in run_.get("decisions", []) if d.get("status") == "ordered"]
+            out += [d for d in run_.get("decisions", []) if d.get("status") in ("ordered", "error")]  # 응답 없음 등 오류도 접수됐을 수 있으니 당일 재주문 금지
     return out
 
 
@@ -226,6 +226,8 @@ def run(region: str, dry: bool | None = None, force: bool = False, wait: float =
                 d["status"] = "dry"
                 notify("자동매도 (드라이런)", f"{'절반' if e['action']=='HALF' else '전량'} 매도 했을 주문: {label}")
                 continue
+            if not in_session(datetime.now(KST), region) and not force:  # 동기화·대기로 시간이 흘러 장이 끝났으면 주문하지 않음
+                d["why"] = "주문 직전 정규장 종료"; continue
             try:
                 o = c.order(region, t, "sell", qty, limit)
                 d["status"] = "ordered"; d["odno"] = o.get("odno"); d["msg"] = o.get("msg")

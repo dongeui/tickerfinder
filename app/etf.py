@@ -144,8 +144,12 @@ def load_results() -> dict | None:
 
 def run(intraday: bool = False, set_partial: bool = True) -> dict:
     """전체 ETF 지표 계산. set_partial=True 면 scanner.KEEP_PARTIAL 을 직접 관리(단독 실행), False 면 run_scan 안에서 호출된 것."""
+    if set_partial and not scanner.SCAN_LOCK.acquire(blocking=False):  # run_scan 과 같은 가격 캐시를 쓰므로 동시 실행 금지 (훅 호출은 이미 락 안)
+        raise RuntimeError("전체 스캔이 실행 중이라 ETF 스캔을 시작할 수 없습니다")
     with _lock:
         if STATE["running"]:
+            if set_partial:
+                scanner.SCAN_LOCK.release()
             raise RuntimeError("ETF 스캔이 이미 실행 중")
         STATE.update(running=True, stage="목록", done=0, total=0, error=None,
                      started_at=datetime.now(scanner.KST).isoformat(timespec="seconds"), finished_at=None)
@@ -184,6 +188,8 @@ def run(intraday: bool = False, set_partial: bool = True) -> dict:
         if set_partial:
             scanner.KEEP_PARTIAL = False
         _set(running=False, finished_at=datetime.now(scanner.KST).isoformat(timespec="seconds"))
+        if set_partial:
+            scanner.SCAN_LOCK.release()
 
 
 def after_scan(regions, intraday: bool) -> None:

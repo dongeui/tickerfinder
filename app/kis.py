@@ -115,20 +115,23 @@ class KIS:
                 "appkey": self.env["KIS_APP_KEY"], "appsecret": self.env["KIS_APP_SECRET"], "tr_id": tr_id, "custtype": "P"}
 
     def _throttle(self):
-        # 모의투자는 초당 요청 제한이 빡빡하므로 0.5초 간격
+        # 모의투자는 초당 요청 제한이 빡빡하므로 0.5초 간격. 여러 스레드(화면·자동매도·체결대조)가 같이 쓰므로 호출자가 _io 락을 잡는다.
         gap = 0.5 if self.mode == "paper" else 0.25
         wait = self._last_call + gap - time.time()
         if wait > 0:
             time.sleep(wait)
         self._last_call = time.time()
 
+    _io = threading.Lock()  # KIS 요청 직렬화 (초당 건수 제한 공유)
+
     def get(self, path: str, tr_key: str, params: dict, tr_cont: str = "") -> dict:
         for i in range(3):  # 조회는 "초당 거래건수 초과" 시 잠깐 쉬고 재시도 (주문 POST 는 재시도하지 않음)
-            self._throttle()
-            h = self._headers(self.tr(tr_key))
-            if tr_cont:
-                h["tr_cont"] = tr_cont
-            r = requests.get(f"{self.base}{path}", headers=h, params=params, timeout=20)
+            with self._io:
+                self._throttle()
+                h = self._headers(self.tr(tr_key))
+                if tr_cont:
+                    h["tr_cont"] = tr_cont
+                r = requests.get(f"{self.base}{path}", headers=h, params=params, timeout=20)
             j = r.json()
             if j.get("rt_cd") in ("0", 0):
                 j["_tr_cont"] = r.headers.get("tr_cont", "")
@@ -141,8 +144,9 @@ class KIS:
         return j
 
     def post(self, path: str, tr_key: str, body: dict) -> dict:
-        self._throttle()
-        r = requests.post(f"{self.base}{path}", headers=self._headers(self.tr(tr_key)), json=body, timeout=20)
+        with self._io:
+            self._throttle()
+            r = requests.post(f"{self.base}{path}", headers=self._headers(self.tr(tr_key)), json=body, timeout=20)
         j = r.json()
         if j.get("rt_cd") not in ("0", 0):
             raise RuntimeError(f"{tr_key}: {j.get('msg1') or j}")
@@ -163,7 +167,7 @@ class KIS:
                 j = self.get("/uapi/overseas-price/v1/quotations/price", "us_price", {"AUTH": "", "EXCD": excd, "SYMB": symbol})
                 if j.get("output", {}).get("last") not in (None, "", "0"):
                     cache[symbol] = excg
-                    EXCH_FILE.write_text(json.dumps(cache))
+                    tmp = EXCH_FILE.with_suffix(".tmp"); tmp.write_text(json.dumps(cache)); tmp.replace(EXCH_FILE)
                     return excg
             except Exception:  # noqa: BLE001
                 continue
@@ -271,20 +275,21 @@ class KIS:
                     "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(round(price))), "EXCG_ID_DVSN_CD": "KRX"}
             if side == "sell":
                 body["SLL_TYPE"] = "01"
-            j = self.post("/uapi/domestic-stock/v1/trading/order-cash", f"kr_{side}", body)
+            path, key = "/uapi/domestic-stock/v1/trading/order-cash", f"kr_{side}"
         else:
             excg = self.exchange_us(ticker)
             body = {"CANO": self.cano, "ACNT_PRDT_CD": self.prdt, "OVRS_EXCG_CD": excg, "PDNO": ticker,
                     "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": f"{price:.2f}", "CTAC_TLNO": self.env.get("KIS_PHONE", ""),
                     "MGCO_APTM_ODNO": "", "SLL_TYPE": "00" if side == "sell" else "", "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": "00"}
-            try:
-                j = self.post("/uapi/overseas-stock/v1/trading/order", f"us_{side}", body)
-            except requests.RequestException as e:
-                rec = {"at": datetime.now().isoformat(timespec="seconds"), "mode": self.mode, "region": region, "ticker": ticker, "side": side,
-                       "qty": qty, "price": price, "odno": None, "msg": f"응답 없음({type(e).__name__}) — 접수됐을 수 있으니 거래내역에서 확인 후 재주문"}
-                with ORDER_LOG.open("a") as f:
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                raise RuntimeError(rec["msg"]) from e
+            path, key = "/uapi/overseas-stock/v1/trading/order", f"us_{side}"
+        try:
+            j = self.post(path, key, body)
+        except requests.RequestException as e:  # 타임아웃 등: 접수됐을 수도 있으므로 국내·해외 모두 기록을 남긴다
+            rec = {"at": datetime.now().isoformat(timespec="seconds"), "mode": self.mode, "region": region, "ticker": ticker, "side": side,
+                   "qty": qty, "price": price, "odno": None, "msg": f"응답 없음({type(e).__name__}) — 접수됐을 수 있으니 거래내역에서 확인 후 재주문"}
+            with ORDER_LOG.open("a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            raise RuntimeError(rec["msg"]) from e
         out = j.get("output", {})
         rec = {"at": datetime.now().isoformat(timespec="seconds"), "mode": self.mode, "region": region, "ticker": ticker, "side": side,
                "qty": qty, "price": price, "odno": out.get("ODNO"), "msg": j.get("msg1"), "fill_status": "accepted" if out.get("ODNO") else "rejected"}
@@ -306,5 +311,11 @@ def client() -> KIS:
 def order_history(limit: int = 100) -> list[dict]:
     if not ORDER_LOG.exists():
         return []
-    rows = [json.loads(l) for l in ORDER_LOG.read_text().splitlines() if l.strip()]
+    rows = []
+    for l in ORDER_LOG.read_text().splitlines():
+        try:
+            if l.strip():
+                rows.append(json.loads(l))
+        except json.JSONDecodeError:  # 깨진 한 줄 때문에 전체가 실패하지 않도록
+            continue
     return rows[-limit:][::-1]

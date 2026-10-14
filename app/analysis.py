@@ -37,7 +37,7 @@ def _history_key() -> tuple:
     return tuple((f.name, f.stat().st_mtime_ns) for f in files)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=1)  # 전체 히스토리 파싱 결과는 수백 MB → 최신 1개만
 def _load(key: tuple) -> list[dict]:
     days = []
     for name, _ in key:
