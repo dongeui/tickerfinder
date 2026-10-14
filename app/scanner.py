@@ -13,6 +13,7 @@ import socket
 import threading
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -236,10 +237,17 @@ def fetch_kr(codes: list[str]) -> dict[str, pd.DataFrame]:
     return out
 
 
+# yfinance 는 종목마다 스레드를 새로 만들고(threads=True) 각 스레드가 시간대 캐시(sqlite)를 따로 연결한 채 끝나 파일 디스크립터가
+# 샌다(2026-10-14 저녁 서버가 'Too many open files' 로 멈춤). 고정 워커 풀 + threads=False 로 연결 수를 워커 수에 묶는다.
+YF_WORKERS = max(1, min(8, int(os.environ.get("YF_WORKERS", "6"))))
+_YF_POOL = ThreadPoolExecutor(max_workers=YF_WORKERS, thread_name_prefix="yf")
+YF_CHUNK = 25
+
+
 def _yf_batch(part: list[str], start: str) -> dict[str, pd.DataFrame]:
     got: dict[str, pd.DataFrame] = {}
     try:
-        d = yf.download(part, start=start, group_by="ticker", progress=False, auto_adjust=True, threads=True)
+        d = yf.download(part, start=start, group_by="ticker", progress=False, auto_adjust=True, threads=False)
     except Exception as e:  # noqa: BLE001
         log.warning("US chunk download failed: %s", e)
         return got
@@ -264,7 +272,17 @@ def _yf_batch(part: list[str], start: str) -> dict[str, pd.DataFrame]:
     return got
 
 
-def fetch_us(symbols: list[str], chunk: int = 300) -> dict[str, pd.DataFrame]:
+def _yf_many(tasks: list[tuple[list[str], str]]):
+    """(묶음, 시작일) 목록을 고정 워커 풀에서 병렬 수집. 순서대로 (묶음, 시작일, 결과) 를 낸다."""
+    for (part, start), got in zip(tasks, _YF_POOL.map(lambda t: _yf_batch(*t), tasks)):
+        yield part, start, got
+
+
+def _chunks(symbols: list[str], start: str, chunk: int = YF_CHUNK) -> list[tuple[list[str], str]]:
+    return [(symbols[i:i + chunk], start) for i in range(0, len(symbols), chunk)]
+
+
+def fetch_us(symbols: list[str], chunk: int = YF_CHUNK) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     fresh = [s for s in symbols if _cache_fresh(s)]
     full = [s for s in symbols if s not in set(fresh)]
@@ -276,34 +294,32 @@ def fetch_us(symbols: list[str], chunk: int = 300) -> dict[str, pd.DataFrame]:
     groups += list((v, k) for k, v in by_start.items())
     reset: list[str] = []
     got_any: set[str] = set()  # 이번 스캔에서 새 데이터를 받은 종목
-    for group, start in groups:
-        for i in range(0, len(group), chunk):
-            part = group[i:i + chunk]
-            got = _yf_batch(part, start)
-            got_any.update(got)
+    tasks = [t for group, start in groups for t in _chunks(group, start, chunk)]
+    for part, _start, got in _yf_many(tasks):
+        got_any.update(got)
+        for s in part:
+            df = merge_cache(s, got.get(s))
+            if df is None and s in got and not _cache_path(s).exists():
+                reset.append(s)
+            elif df is not None:
+                out[s] = df
+        with _lock:
+            STATE["done"] += len(part)
+    if reset:  # 분할 등으로 캐시가 리셋된 종목은 전체 재수집
+        for part, _start, got in _yf_many(_chunks(reset, _start_date())):
             for s in part:
                 df = merge_cache(s, got.get(s))
-                if df is None and s in got and not _cache_path(s).exists():
-                    reset.append(s)
-                elif df is not None:
+                if df is not None:
                     out[s] = df
-            with _lock:
-                STATE["done"] += len(part)
-    if reset:  # 분할 등으로 캐시가 리셋된 종목은 전체 재수집
-        got = _yf_batch(reset, _start_date())
-        for s in reset:
-            df = merge_cache(s, got.get(s))
-            if df is not None:
-                out[s] = df
     # 배치에서 새 데이터가 안 온 종목(yfinance 일시 오류: sqlite 캐시 'unable to open database file', 'possibly delisted')은
     # 잠깐 쉬고 작은 묶음으로 한 번 더. 그래도 없으면 기존 캐시(하루 전 값)로 남는다.
     missed = [s for s in symbols if s not in got_any]
     if missed:
         time.sleep(2)
         log.info("US retry for %d symbols missing from batch", len(missed))
-        for i in range(0, len(missed), 50):
-            part = missed[i:i + 50]
-            got = _yf_batch(part, _incr_start(part[0]) if all(_cache_fresh(x) for x in part) else _start_date())
+        retry = [(part, _incr_start(part[0]) if all(_cache_fresh(x) for x in part) else _start_date())
+                 for part, _ in _chunks(missed, "")]
+        for part, _start, got in _yf_many(retry):
             for s in part:
                 if s in got:
                     df = merge_cache(s, got[s])
@@ -316,7 +332,7 @@ def fetch_index(sym: str) -> pd.DataFrame | None:
     start = _incr_start(sym)
     new = None
     try:
-        df = yf.download(sym, start=start, progress=False, auto_adjust=True)
+        df = yf.download(sym, start=start, progress=False, auto_adjust=True, threads=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if len(df):

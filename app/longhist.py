@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import threading
@@ -100,6 +101,8 @@ def _download(symbols: list[str], start: str) -> dict[str, pd.DataFrame]:
     except Exception as e:  # noqa: BLE001
         log.warning("long download failed: %s", e)
         return got
+    finally:
+        gc.collect()  # yfinance 작업 스레드가 남긴 시간대 캐시(sqlite) 연결을 바로 회수 (파일 디스크립터 누수 방지)
     if d is None or not len(d):
         return got
     for s in symbols:

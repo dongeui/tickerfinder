@@ -10,6 +10,8 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>/Users/dongeui/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string><key>HOME</key><string>/Users/dongeui</string></dict>
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>8192</integer></dict>
+  <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>16384</integer></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/Users/dongeui/Library/Logs/tickerfinder/server.log</string>

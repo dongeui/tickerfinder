@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import resource
 import threading
+import time
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,8 +39,52 @@ app = FastAPI(title="tickerfinder")
 app.add_middleware(GZipMiddleware, minimum_size=1024)  # results/sparks/history 가 1MB 안팎 → 전송량 1/4~1/6
 
 
+PORT = int(os.environ.get("PORT", "8765"))  # 자기 점검(watchdog)용. uvicorn --port 와 맞출 것
+FD_LIMIT = int(os.environ.get("FD_LIMIT", "8192"))
+
+
+def _raise_fd_limit() -> None:
+    """launchd 가 주는 파일 디스크립터 soft limit(기본 256)을 올린다. 2026-10-14 저녁 'Too many open files' 로 서버가 멈춘 적이 있음."""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = FD_LIMIT if hard == resource.RLIM_INFINITY else min(FD_LIMIT, hard)
+        if soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            log.info("fd soft limit %s → %s", soft, want)
+    except (ValueError, OSError) as e:
+        log.warning("fd limit raise failed: %s", e)
+
+
+def open_fds() -> int | None:
+    try:
+        return len(os.listdir("/dev/fd"))
+    except OSError:
+        return None
+
+
+def _watchdog(interval: int = 60, fails_to_exit: int = 3) -> None:
+    """자기 자신의 /api/health 를 1분마다 호출해 연속 3회 실패하면 종료 → launchd KeepAlive 가 다시 띄운다.
+    (프로세스는 살아 있는데 접속만 안 되는 상태 — fd 고갈 등 — 는 KeepAlive 만으로는 복구되지 않는다.)"""
+    time.sleep(120)
+    fails, err = 0, None
+    while True:
+        time.sleep(interval)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/health", timeout=15) as r:
+                ok = r.status == 200
+        except Exception as e:  # noqa: BLE001
+            ok, err = False, e
+        fails = 0 if ok else fails + 1
+        if fails >= fails_to_exit:
+            log.error("watchdog: self-check failed %d times (%s) → exit for launchd restart", fails, err)
+            logging.shutdown()
+            os._exit(75)
+
+
 @app.on_event("startup")
 def _start_scheduler():
+    _raise_fd_limit()
+    threading.Thread(target=_watchdog, daemon=True).start()
     scanner.AFTER_SCAN.append(etf.after_scan)
     if AUTO_SCAN_TIMES:
         threading.Thread(target=scanner.scheduler_loop, args=(AUTO_SCAN_TIMES, KOSDAQ_TOP, INTRADAY_SYNC), daemon=True).start()
@@ -70,6 +117,11 @@ def start_scan(region: str | None = None, intraday: bool = False):
 
     threading.Thread(target=_run, daemon=True).start()
     return {"ok": True, "regions": regions, "intraday": intraday}
+
+
+@app.get("/api/health")
+async def health():  # async: 동기 엔드포인트용 스레드풀이 바빠도 응답 (watchdog 은 접속 자체가 되는지만 본다)
+    return {"ok": True, "open_fds": open_fds(), "fd_limit": resource.getrlimit(resource.RLIMIT_NOFILE)[0]}
 
 
 @app.get("/api/status")
