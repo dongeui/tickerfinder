@@ -41,6 +41,13 @@ INDICES = {"IXIC": "^IXIC", "GSPC": "^GSPC", "KS11": "^KS11", "KQ11": "^KQ11", "
 # 스캔 완료 후 호출되는 훅 (regions, intraday) — ETF 전용 스캔 등. main 에서 등록.
 AFTER_SCAN: list = []
 
+try:  # yfinance 의 sqlite 캐시(시간대)를 프로젝트 데이터 폴더에 두어 공용 캐시 폴더 잠금 문제를 피한다
+    _yf_cache = DATA_DIR / "yf_cache"
+    _yf_cache.mkdir(exist_ok=True)
+    yf.set_tz_cache_location(str(_yf_cache))
+except Exception as _e:  # noqa: BLE001
+    log.warning("yfinance cache location not set: %s", _e)
+
 STATE = {
     "running": False, "stage": "", "done": 0, "total": 0,
     "started_at": None, "finished_at": None, "error": None, "failed": [],
@@ -122,8 +129,10 @@ def merge_cache(ticker: str, new: pd.DataFrame | None) -> pd.DataFrame | None:
         common = old.index.intersection(new.index)
         if len(common):
             ratio = (old.loc[common, "Close"] / new.loc[common, "Close"]).replace([np.inf, -np.inf], np.nan).dropna()
-            if len(ratio) and (ratio - 1).abs().max() > 0.01:
-                log.warning("%s: cached prices differ from fresh data (max %.1f%%) → cache reset", ticker, (ratio - 1).abs().max() * 100)
+            # 분할·감자면 겹치는 날짜 전부가 같은 비율로 어긋난다 → 중앙값으로 판정. 마지막 봉 하나만 다른 것(국내는 저녁에 받은 시간외 단일가 종가가
+            # 다음 날 정규장 종가로 바뀜, 1~2%)은 리셋하지 않고 새 값으로 덮어쓴다 (예전엔 매일 아침 100종목쯤 전체 재수집했음).
+            if len(ratio) and abs(float(ratio.median()) - 1) > 0.01:
+                log.warning("%s: cached prices differ from fresh data (median %.1f%%) → cache reset", ticker, (ratio.median() - 1) * 100)
                 _cache_path(ticker).unlink(missing_ok=True)
                 return None
         df = pd.concat([old, new])
@@ -244,10 +253,12 @@ def fetch_us(symbols: list[str], chunk: int = 300) -> dict[str, pd.DataFrame]:
         by_start.setdefault(_incr_start(s), []).append(s)
     groups += list((v, k) for k, v in by_start.items())
     reset: list[str] = []
+    got_any: set[str] = set()  # 이번 스캔에서 새 데이터를 받은 종목
     for group, start in groups:
         for i in range(0, len(group), chunk):
             part = group[i:i + chunk]
             got = _yf_batch(part, start)
+            got_any.update(got)
             for s in part:
                 df = merge_cache(s, got.get(s))
                 if df is None and s in got and not _cache_path(s).exists():
@@ -262,6 +273,20 @@ def fetch_us(symbols: list[str], chunk: int = 300) -> dict[str, pd.DataFrame]:
             df = merge_cache(s, got.get(s))
             if df is not None:
                 out[s] = df
+    # 배치에서 새 데이터가 안 온 종목(yfinance 일시 오류: sqlite 캐시 'unable to open database file', 'possibly delisted')은
+    # 잠깐 쉬고 작은 묶음으로 한 번 더. 그래도 없으면 기존 캐시(하루 전 값)로 남는다.
+    missed = [s for s in symbols if s not in got_any]
+    if missed:
+        time.sleep(2)
+        log.info("US retry for %d symbols missing from batch", len(missed))
+        for i in range(0, len(missed), 50):
+            part = missed[i:i + 50]
+            got = _yf_batch(part, _incr_start(part[0]) if all(_cache_fresh(x) for x in part) else _start_date())
+            for s in part:
+                if s in got:
+                    df = merge_cache(s, got[s])
+                    if df is not None:
+                        out[s] = df
     return out
 
 
