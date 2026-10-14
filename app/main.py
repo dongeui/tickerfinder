@@ -48,7 +48,8 @@ def _start_scheduler():
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    # 화면 파일은 자주 바뀌므로 브라우저가 매번 서버에 확인하도록 (일반 새로고침으로 최신 반영)
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/scan")
