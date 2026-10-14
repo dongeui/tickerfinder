@@ -26,8 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
 WATCHLIST = DATA_DIR / "watchlist.json"
 KOSDAQ_TOP = int(os.environ.get("KOSDAQ_TOP", "100"))
-# 평일 자동 스캔 시각(KST). 국내는 시간외 단일가(~18:00) 종료 후, 미국은 마감 후. 빈 문자열이면 비활성.
-AUTO_SCAN_TIMES = [t.strip() for t in os.environ.get("AUTO_SCAN_TIMES", "18:10,06:40").split(",") if t.strip()]
+# 평일 자동 스캔 시각(KST). 'HH:MM@KR' 은 국내만. 기본: 15:40 국내(정규장 종가 확정 직후, 16시 시간외 단일가 전) + 06:40 국내·미국(미국 마감 후,
+# 국내는 네이버 종가가 정규장 기준으로 돌아온 뒤 재확인). 빈 문자열이면 비활성.
+AUTO_SCAN_TIMES = [t.strip() for t in os.environ.get("AUTO_SCAN_TIMES", "15:40@KR,06:40").split(",") if t.strip()]
 # 장중 시간별 잠정 동기화 (국내 KST 09:05~15:35, 미국 뉴욕 10:05~15:05). INTRADAY_SYNC=0 이면 끔.
 INTRADAY_SYNC = os.environ.get("INTRADAY_SYNC", "1") not in ("0", "false", "no")
 

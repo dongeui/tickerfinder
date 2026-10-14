@@ -74,16 +74,21 @@ def region_of(ticker: str) -> str:
     return "KR" if (ticker.isdigit() or ticker in ("^KS11", "^KQ11")) else "US"
 
 
-def is_partial_bar(df: pd.DataFrame, region: str) -> bool:
-    """마지막 봉이 아직 확정되지 않은 당일 봉인가 (KR: 18:05 KST 이전, US: 16:05 NY 이전).
+KR_CLOSE_FINAL = "15:35"  # 정규장 15:30 마감 → 이후 종가 확정 (15:40~16:00 장후 종가매매는 종가를 바꾸지 않음)
+KR_AFTER_HOURS_FROM = "16:00"  # 16:00~18:00 시간외 단일가: 네이버 일봉이 그 체결가를 당일 종가로 내보냄 → 캐시의 정규장 종가를 지킨다
 
-    네이버 일봉은 16:00~18:00 시간외 단일가 체결가를 당일 종가로 내보내므로 국내는 18:00 이후에만 확정으로 본다.
+
+def is_partial_bar(df: pd.DataFrame, region: str) -> bool:
+    """마지막 봉이 아직 확정되지 않은 당일 봉인가 (KR: 15:35 KST 이전, US: 16:05 NY 이전).
+
+    국내는 정규장 종가(15:30) 기준으로 확정한다. 16~18시 시간외 단일가가 네이버 종가에 섞이는 문제는 fetch_kr_one 이
+    15:35 이후 받아둔 캐시 봉을 우선해 막는다 (_keep_regular_close).
     """
     if df is None or not len(df):
         return False
     if region == "KR":
         now = datetime.now(KST)
-        return now.strftime("%H:%M") < "18:05" and df.index[-1].date() == now.date()
+        return now.strftime("%H:%M") < KR_CLOSE_FINAL and df.index[-1].date() == now.date()
     now = datetime.now(ZoneInfo("America/New_York"))
     return now.strftime("%H:%M") < "16:05" and df.index[-1].date() == now.date()
 
@@ -193,8 +198,25 @@ def _fdr_get(code: str, start: str, retries: int = 2) -> pd.DataFrame | None:
     return None
 
 
+def _keep_regular_close(code: str, new: pd.DataFrame | None, now: datetime | None = None) -> pd.DataFrame | None:
+    """16:00 이후(당일) 네이버가 내보내는 당일 봉은 시간외 단일가 체결가가 종가에 섞일 수 있다.
+    15:35~16:00 사이(15:35 장중 동기화·15:40 국내 전체 스캔)에 캐시에 저장된 정규장 종가 봉이 있으면 그것을 유지하고
+    새로 받은 당일 행은 버린다. 캐시에 당일 봉이 없으면(그 시각 서버 중단 등) 받은 값을 그대로 쓰고 다음 날 06:40 스캔이 정정한다."""
+    if new is None or not len(new):
+        return new
+    now = now or datetime.now(KST)
+    if now.strftime("%H:%M") < KR_AFTER_HOURS_FROM:
+        return new
+    old = load_cache(code)
+    if old is None or old.index[-1].date() != now.date():
+        return new
+    idx = pd.to_datetime(new.index).tz_localize(None).normalize()
+    today = idx == pd.Timestamp(now.date())
+    return new.loc[~today] if today.any() else new
+
+
 def fetch_kr_one(code: str) -> pd.DataFrame | None:
-    new = drop_partial_bar(_fdr_get(code, _incr_start(code)), "KR")
+    new = _keep_regular_close(code, drop_partial_bar(_fdr_get(code, _incr_start(code)), "KR"))
     df = merge_cache(code, new)
     if df is None and new is not None and not _cache_path(code).exists():
         # 캐시가 리셋됨(분할 등) → 전체 구간 재수집
@@ -554,15 +576,22 @@ def _load_runs() -> dict[str, str]:
         return {}
 
 
+def parse_scan_time(token: str) -> tuple[str, tuple[str, ...]]:
+    """'HH:MM' → 두 지역, 'HH:MM@KR' / 'HH:MM@US' → 그 지역만."""
+    t, _, reg = token.partition("@")
+    regs = tuple(r for r in reg.upper().split("+") if r in ("KR", "US")) if reg else ("KR", "US")
+    return t.strip(), (regs or ("KR", "US"))
+
+
 def due_full_scan(now: datetime, times: list[str], runs: dict[str, str]) -> str | None:
-    """오늘 아직 안 돈 정시 스캔 중 시각이 지났고 CATCHUP_HOURS 이내인 것."""
+    """오늘 아직 안 돈 정시 스캔 중 시각이 지났고 CATCHUP_HOURS 이내인 것 (토큰 그대로 반환)."""
     if now.weekday() >= 5:
         return None
     today = now.strftime("%Y-%m-%d")
     for t in times:
         if runs.get(t) == today:
             continue
-        hh, mm = (int(x) for x in t.split(":"))
+        hh, mm = (int(x) for x in parse_scan_time(t)[0].split(":"))
         at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if at <= now < at + timedelta(hours=CATCHUP_HOURS):
             return t
@@ -570,7 +599,7 @@ def due_full_scan(now: datetime, times: list[str], runs: dict[str, str]) -> str 
 
 
 def scheduler_loop(times: list[str], kosdaq_top: int = 100, intraday: bool = True):
-    """매 30초 체크: 평일 지정 시각(KST)에 전체 스캔(놓쳤으면 4시간 내 따라잡기), 장중에는 시간별로 해당 지역만 잠정 동기화."""
+    """매 30초 체크: 평일 지정 시각(KST)에 전체 스캔(놓쳤으면 4시간 내 따라잡기; 'HH:MM@KR' 이면 그 지역만), 장중에는 시간별로 해당 지역만 잠정 동기화."""
     last_run: dict[str, str] = {}
     runs = _load_runs()
     while True:
@@ -584,7 +613,7 @@ def scheduler_loop(times: list[str], kosdaq_top: int = 100, intraday: bool = Tru
                 except OSError:
                     pass
                 try:
-                    run_scan(kosdaq_top)
+                    run_scan(kosdaq_top, regions=parse_scan_time(t)[1])
                 except Exception:  # noqa: BLE001
                     pass
             elif intraday and (regs := due_intraday(now)) and last_run.get("intraday") != key:

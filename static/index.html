@@ -318,7 +318,7 @@ async function pollStatus(){
     const at = sy ? sy.at : (DATA ? DATA.scanned_at : null);
     const live = s.session && s.session[REGION];
     $('#stLast').innerHTML = (at ? `${REGION==='US'?'미국':'국내'} 동기화 ${at.replace('T',' ').slice(5,16)}${sy&&sy.partial?' <span class="pill warn" title="정규장 중 가격으로 계산한 잠정값. 마감 후 자동 스캔에서 확정됩니다">장중 잠정</span>':''}` : '')
-      + (s.auto_scan_times.length ? ` · 자동 ${s.auto_scan_times.join('/')}` : '') + (s.intraday_sync ? ` + 장중 매시${live?' <span class="pill ok">장중</span>':''}` : '');
+      + (s.auto_scan_times.length ? ` · 자동 ${s.auto_scan_times.map(t=>t.replace(/@KR$/i,'(국내)').replace(/@US$/i,'(미국)')).join('/')}` : '') + (s.intraday_sync ? ` + 장중 매시${live?' <span class="pill ok">장중</span>':''}` : '');
     if(!s.running && s.finished_at && s.finished_at !== lastFinished){ lastFinished = s.finished_at; if(!s.error) await loadResults(); }
     delay = s.running ? 1500 : 15000;
   }catch(e){ delay = 5000; }
