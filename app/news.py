@@ -199,14 +199,17 @@ def _gtx_protected(title: str) -> str | None:
 
 
 LLM_CHUNK = 40
+LLM_PARALLEL = max(1, min(4, int(os.environ.get("NEWS_LLM_PARALLEL", "3"))))  # 묶음을 동시에 몇 개까지 (백필 속도)
 
 
 def _llm_enrich(items: list[dict]) -> dict[int, dict]:
-    """claude -p 로 번역 + 영향 정리 (LLM_CHUNK 개씩 나눠 호출, 번호는 전체 기준). {번호: {title_ko, impact, tone, skip}}. 실패 시 {}."""
+    """claude -p 로 번역 + 영향 정리 (LLM_CHUNK 개씩 나눠 최대 LLM_PARALLEL 개 동시 호출, 번호는 전체 기준). {번호: {title_ko, impact, tone, skip}}. 실패 시 {}."""
+    from concurrent.futures import ThreadPoolExecutor
+    offsets = list(range(0, len(items), LLM_CHUNK))
     res: dict[int, dict] = {}
-    for off in range(0, len(items), LLM_CHUNK):
-        part = _llm_enrich_once(items[off:off + LLM_CHUNK])
-        res.update({off + i: v for i, v in part.items()})
+    with ThreadPoolExecutor(max_workers=LLM_PARALLEL) as ex:
+        for off, part in zip(offsets, ex.map(lambda o: _llm_enrich_once(items[o:o + LLM_CHUNK]), offsets)):
+            res.update({off + i: v for i, v in part.items()})
     return res
 
 
