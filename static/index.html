@@ -71,6 +71,7 @@ svg text{fill:var(--muted);font-size:10px;font-family:var(--mono)}
 textarea{width:100%;min-height:60px}
 tr.xopen td{background:#1b1f28}
 tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;text-align:left;cursor:default}
+tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px solid var(--line)} tr.grp a{color:var(--muted);font-size:11px;margin-left:8px;cursor:pointer;text-decoration:underline}
 .xbox{padding:10px 12px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);position:sticky;left:0;box-sizing:border-box}  /* 표가 화면보다 넓어도 펼친 차트(가격축 포함)는 보이는 폭 안에 (fitBoxes) */
 .ctool{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
 .ctool .seg{margin:0}.ctool .seg button{padding:4px 10px;font-size:12px}
@@ -652,6 +653,7 @@ function renderTable(mode){
 // ---------- ETF (국내상장 · 미국시장 추종) ----------
 // 상단 국내/미국 선택과 무관. 분석 기준은 미국 설정(스토캐 시간대 b_st_tf_us, 나스닥 RSI 게이트, 미국 모델·3분위)을 쓰므로 region 을 US 로 바꿔 평가한다.
 let ETF = null, etfTimer = null;
+const ETF_KIND_ORDER = ['대표지수','섹터·테마','배당','커버드콜','레버리지·인버스'];
 const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['stoch','스토캐 %K 일 / 주'],['band','밴드 %'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['stat','ETF 실측 승률 (60일 / 180일)','l']];
 // scripts/etf_conditions.py (2026-10-14): 다음날 시가 진입, 첫 충족일만. H=미국 ETF 11종 달러 2000~ (규칙 C: 주스토≤25&밴드±3&게이트), open=같은 ETF 원화환산 2004~ (규칙 A: 주스토≤25&게이트). nogate=같은 종목조건을 게이트 없이, base=모든 날.
 const ETF_STATS = {
@@ -730,13 +732,19 @@ function renderEtf(){
   const val = r => key==='name' ? r.s.name : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='stoch' ? (tf==='w'?r.s.stoch_k_w:r.s.stoch_k) : key==='band' ? (r.s.band_pos==null?null:Math.abs(r.s.band_pos)) : key==='rsi' ? r.s.rsi_d : (key==='sig'||key==='stat') ? (r.buyHit?4:r.waitGate?3:r.bc.length&&r.bmiss===1?2:r.sellHit?1:0) : r.s[key];
   const sv = r => (r.buyHit?4:r.waitGate?3:0)*1000 + (r.s.turnover20||0)/1e9;  // 동률: 신호 → 거래대금
   rows.sort((a,b)=>{ const x=val(a), y=val(b); if(x==null&&y==null) return sv(b)-sv(a); if(x==null) return 1; if(y==null) return -1; return ((x>y?1:x<y?-1:0)*dir) || (sv(b)-sv(a)); });
+  // 유형 '전체'면 유형별로 묶어서(대표지수 → 섹터·테마 → 배당 → 커버드콜 → 레버리지·인버스), 묶음 안에서는 위 정렬 유지
+  const grouped = !kind; const ko = r => { const i = ETF_KIND_ORDER.indexOf(r.s.kind); return i<0 ? 99 : i; };
+  if(grouped) rows.sort((a,b)=>ko(a)-ko(b));
   const buyN = rows.filter(r=>r.buyHit).length, waitN = rows.filter(r=>r.waitGate).length, sellN = rows.filter(r=>r.sellHit).length;
   $('#e_sum').innerHTML = `<span>표시 <b>${rows.length}</b> / ${ETF.etfs.length}종목</span><span>매수 신호 <b>${buyN}</b></span><span>게이트 대기 <b>${waitN}</b></span><span>매도 조건 충족 <b>${sellN}</b></span><span>기준일 ${ETF.etfs[0]?.date||''}</span><span>시장 환경: 나스닥 RSI <b>${fmtN(DATA?.indices?.IXIC?.rsi_d,1)}</b> <span class="pill ${gate?'ok':'no'}">${gate?'충족':gate===false?'미충족':'-'}</span></span>${ETF.failed?.length?`<span title="${esc(ETF.failed.join(', '))}">수집 실패 ${ETF.failed.length} (신규 상장 등)</span>`:''}`;
   if(!rows.length){ if(kept) disposeChart('e'); XP.e=null; $('#e_table').innerHTML = '<div class="empty">'+(sig==='buy'&&gate!==true?`지금은 나스닥 RSI ${fmtN(DATA?.indices?.IXIC?.rsi_d,1)} 로 시장 환경 게이트(≤${$('#b_mkt_hi').value}) 미충족이라 매수 신호가 없습니다. 종목 조건만 충족한 것은 "게이트 대기"에서 볼 수 있지만, 백테스트에서 게이트 없는 진입은 기준율과 같았습니다.`:'조건에 맞는 ETF 가 없습니다.')+'</div>'; return; }
   let h = '<table><thead><tr>' + ETF_COLS.map(([k,n,l])=>`<th class="${l||''} ${k===key?'sorted':''}" data-k="${k}">${n}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('') + (KIS_OK?'<th></th>':'') + '</tr></thead><tbody>';
   const hitCls = (v, hit) => v==null ? '' : hit ? 'hit' : '';
+  let curKind = null;
   for(const r of rows){ const s=r.s, s0=r.s0;
     const stMax=+$('#b_st_max').value, tol=+$('#b_ma_tol').value;
+    if(grouped && s.kind!==curKind){ curKind = s.kind; const g = rows.filter(x=>x.s.kind===curKind);
+      h += `<tr class="grp"><td colspan="${ETF_COLS.length+(KIS_OK?1:0)}"><b>${esc(curKind)}</b> <span style="color:var(--muted)">${g.length}종목 · 매수 신호 ${g.filter(x=>x.buyHit).length} · 게이트 대기 ${g.filter(x=>x.waitGate).length}</span><a data-kind="${esc(curKind)}">이 유형만 보기</a></td></tr>`; }
     h += `<tr data-t="${s.ticker}" style="cursor:pointer" title="클릭: 상세 차트 펼치기/접기">` + ETF_COLS.map(([k,n,l])=>{
       let v;
       if(k==='name') v = `<div>${esc(s.name)} <span style="color:var(--muted);font-size:11px">${s.ticker}</span> <span class="pill" style="font-size:10px">${esc(s.kind)}</span> <span class="pill ${s.fx==='H'?'warn':''}" style="font-size:10px">${(ETF_FX[s.fx]||['-'])[0]}</span>${r.isNew?'<span class="new">NEW</span>':''}${s.suspect?' <span class="pill no" title="최근 250봉 내 하루 ±50% 이상 점프">의심</span>':''}</div><div style="font-size:11px;color:var(--muted)" class="num">${fmtN(s.close,0)} <span class="${s.chg>=0?'up':'dn'}">${s.chg==null?'':(s.chg>=0?'+':'')+fmtN(s.chg,1)+'%'}</span>${s.partial?' <span title="장중 잠정값">⏱</span>':''}${s.premium!=null?` · NAV 괴리 ${s.premium>=0?'+':''}${fmtN(s.premium,2)}%`:''}</div>`;
@@ -756,6 +764,7 @@ function renderEtf(){
   $('#e_table').innerHTML = h + '</tbody></table>';
   $('#e_table').querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; if(sortKey.etf===k) sortDir.etf*=-1; else {sortKey.etf=k; sortDir.etf=k==='name'?1:-1;} renderEtf(); });
   $('#e_table').querySelectorAll('tr[data-t]').forEach(tr=>tr.onclick=ev=>{ if(ev.target.closest('a')||ev.target.closest('button')) return; toggleRow(tr, tr.dataset.t, 'e'); });
+  $('#e_table').querySelectorAll('tr.grp a[data-kind]').forEach(a=>a.onclick=()=>{ $('#e_kind').value=a.dataset.kind; saveSettings(); renderEtf(); });
   reattachRow('e', kept);
   $('#e_table').querySelectorAll('button.ord').forEach(b=>b.onclick=ev=>{ ev.stopPropagation(); orderDraft(b.dataset.t, b.dataset.side); });
 }
