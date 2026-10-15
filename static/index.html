@@ -238,7 +238,7 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
       <div class="note" style="margin:0 0 6px">CNBC·MarketWatch·Google News(영문/국문) RSS 에서 최근 36시간 기사를 모아 중복을 빼고 매체를 섞어 20개. 영문 제목 번역과 "영향" 메모(어떤 종목·시장에 어떤 방향인지, 5줄 이내)는 로컬 Claude(haiku)가 정리하며 고유명사는 영문 그대로 둡니다. 무관한 기사는 메모 없음. 맨 오른쪽은 미국 증시에 주는 함의(긍정·우려·중립·혼재). 증권사·운용사 상품 출시·순자산 돌파 같은 홍보성 기사는 제외. 아래 회색이 원문. 20분마다 갱신.</div>
       <div id="n_list"></div></div>
     <div class="chart"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">뉴스 일별·월별 요약 <span id="nd_meta" style="font-weight:400;color:var(--muted);font-size:12px"></span></h3>
-      <div class="note" style="margin:0 0 6px">위에 표시됐던 기사를 발행일 기준으로 쌓아 하루 단위로 기사 수와 긍정/우려 수를 세고, 긍정이 우려의 1.5배 이상이면 "상승 우위", 반대면 "하락 우위", 아니면 "혼조". 이번 달은 날짜별로, 지난 달들은 월 한 줄로 접힘(누르면 펼침). 날짜를 누르면 그날 제목 목록.</div>
+      <div class="note" style="margin:0 0 6px">위에 표시됐던 기사를 발행일 기준으로 쌓아 하루 단위로 기사 수와 긍정/우려 수를 세고, 긍정이 우려의 1.5배 이상이면 "상승 우위", 반대면 "하락 우위", 아니면 "혼조". 이번 달은 날짜별로, 지난 달들은 월 한 줄로 접힘(누르면 펼침). 날짜를 누르면 그날 제목 목록. 리포트 탭을 안 열어도 서버가 3시간마다 수집해 기록하고, 비어 있는 지난 날짜(최근 30일)는 Google News 날짜 검색으로 자동 백필합니다(백필분은 Google News 영문·국문만).</div>
       <div id="n_daily"></div></div>
     <div class="chart" id="r_detail" style="display:none;margin-top:12px"><h3 class="dtitle"></h3><div class="dchart"></div></div>
   </section>
@@ -994,7 +994,9 @@ function ndCounts(a){ return `<span style="color:var(--muted);font-size:12px">�
 function ndVerdict(a){ return a.n ? `<span class="pill ${VERD_CLS[a.verdict]||''}" style="font-weight:600">${a.verdict}</span>` : ''; }
 function renderNewsDaily(){
   const d = ND; if(!d) return;
-  $('#nd_meta').textContent = d.since ? `${d.since}부터 누적 ${d.total}건` : '';
+  const bf = d.backfill||{};
+  $('#nd_meta').textContent = (d.since ? `${d.since}부터 누적 ${d.total}건` : '') + ` · ${d.refresh_hours||3}시간마다 자동 수집` + (bf.running ? ` · 지난 날짜 백필 중 ${bf.done}/${bf.total} (${bf.stage})` : '');
+  if(bf.running){ clearTimeout(window.__ndPoll); window.__ndPoll = setTimeout(loadNewsDaily, 15000); }
   if(!d.days?.length){ $('#n_daily').innerHTML = '<div class="empty">아직 쌓인 기사가 없습니다. 뉴스가 갱신되면 여기에 날짜별로 정리됩니다.</div>'; return; }
   const curM = d.days[0].date.slice(0,7);
   const dayRow = x => `<div class="ndday" data-d="${x.date}" style="display:flex;align-items:center;gap:12px;padding:7px 6px;border-top:1px solid var(--line);cursor:pointer">

@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,10 @@ from .scanner import KST, atomic_write_text
 from .universe import DATA_DIR
 
 LLM_MODEL = os.environ.get("NEWS_LLM_MODEL", "claude-haiku-5-5")
+REFRESH_HOURS = float(os.environ.get("NEWS_REFRESH_HOURS", "3"))  # 리포트 탭을 안 열어도 주기적으로 수집·기록
+BACKFILL_DAYS = int(os.environ.get("NEWS_BACKFILL_DAYS", "30"))    # 로그에 비어 있는 지난 날짜를 Google News 날짜 검색으로 채움
+BACKFILL_MIN = 8                                                   # 하루에 이 개수 미만이면 그 날짜를 백필
+BACKFILL_PER_DAY = 20
 LLM_TIMEOUT = 150
 TONES = ("긍정", "우려", "중립", "혼재")  # 기사가 미국 증시에 주는 함의
 
@@ -58,11 +63,22 @@ def _is_product_pr(title: str, desc: str = "") -> bool:
     t = f"{title} {desc}"
     return any(p.search(t) for p in PR_PATTERNS)
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh) tickerfinder/1.0"}
+GN_EN = 'stock market OR nasdaq OR "wall street" OR "S&P 500"'
+GN_KO = "뉴욕증시 OR 미국 증시 OR 나스닥"
+
+
+def _gnews_url(query: str, lang: str, after: str | None = None, before: str | None = None) -> str:
+    """Google News RSS 검색. after/before(YYYY-MM-DD) 를 주면 그 날짜 범위(백필용), 아니면 최근 1일."""
+    q = query + (f" after:{after} before:{before}" if after and before else " when:1d")
+    loc = "&hl=en-US&gl=US&ceid=US:en" if lang == "en" else "&hl=ko&gl=KR&ceid=KR:ko"
+    return "https://news.google.com/rss/search?q=" + urllib.request.quote(q) + loc
+
+
 FEEDS = [
     ("CNBC", "https://www.cnbc.com/id/10000664/device/rss/rss.html", "en"),
     ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en"),
-    ("Google News", "https://news.google.com/rss/search?q=" + urllib.request.quote('stock market OR nasdaq OR "wall street" OR "S&P 500" when:1d') + "&hl=en-US&gl=US&ceid=US:en", "en"),
-    ("Google 뉴스", "https://news.google.com/rss/search?q=" + urllib.request.quote("뉴욕증시 OR 미국 증시 OR 나스닥 when:1d") + "&hl=ko&gl=KR&ceid=KR:ko", "ko"),
+    ("Google News", _gnews_url(GN_EN, "en"), "en"),
+    ("Google 뉴스", _gnews_url(GN_KO, "ko"), "ko"),
 ]
 _lock = threading.Lock()
 
@@ -82,8 +98,11 @@ def _fetch_feed(name: str, url: str, lang: str) -> list[dict]:
             continue
         src_el = it.find("source")
         source = (src_el.text or "").strip() if src_el is not None and src_el.text else name
-        if src_el is not None and title.endswith(" - " + source):  # Google News 는 제목 끝에 매체명을 붙인다
-            title = title[: -len(source) - 3].strip()
+        if src_el is not None:  # Google News 는 제목 끝에 " - 매체명" 을 붙인다 (source 요소와 표기가 다를 때도 있어 짧은 꼬리는 떼어냄)
+            if title.endswith(" - " + source):
+                title = title[: -len(source) - 3].strip()
+            else:
+                title = re.sub(r"\s+-\s+[^-]{1,24}$", "", title).strip()
         try:
             pub = parsedate_to_datetime(it.findtext("pubDate") or "")
             if pub.tzinfo is None:
@@ -240,13 +259,13 @@ def _translate(items: list[dict]) -> None:
             pass
 
 
-def _select(items: list[dict]) -> list[dict]:
+def _select(items: list[dict], pool: int = POOL, max_age: timedelta | None = MAX_AGE) -> list[dict]:
     now = datetime.now(timezone.utc)
     seen: set[str] = set()
     shingles: list[set[str]] = []
     by_feed: dict[str, list[dict]] = {}
     for it in sorted(items, key=lambda x: x["_pub"], reverse=True):
-        if now - it["_pub"] > MAX_AGE or _is_product_pr(it["title"], it.get("desc", "")):
+        if (max_age is not None and now - it["_pub"] > max_age) or _is_product_pr(it["title"], it.get("desc", "")):
             continue
         k = _norm(it["title"])
         if not k or k in seen:
@@ -259,9 +278,9 @@ def _select(items: list[dict]) -> list[dict]:
         by_feed.setdefault(it["feed"], []).append(it)
     picked: list[dict] = []
     queues = [by_feed[n] for n, _, _ in FEEDS if by_feed.get(n)]
-    while len(picked) < POOL and any(queues):  # 피드별로 번갈아 최신 기사부터 (LLM 이 홍보성으로 거른 뒤 LIMIT 개)
+    while len(picked) < pool and any(queues):  # 피드별로 번갈아 최신 기사부터 (LLM 이 홍보성으로 거른 뒤 LIMIT 개)
         for q in queues:
-            if q and len(picked) < POOL:
+            if q and len(picked) < pool:
                 picked.append(q.pop(0))
     picked.sort(key=lambda x: x["_pub"], reverse=True)
     for it in picked:
@@ -303,11 +322,12 @@ def refresh() -> dict:
             except Exception as e:  # noqa: BLE001
                 log.warning("news translate failed: %s", e)
             skipped = [it["title"] for it in picked if it.get("skip")]
-            picked = [it for it in picked if not it.get("skip")][:LIMIT]
+            kept = [it for it in picked if not it.get("skip")]
             try:
-                _log_items(picked)
+                _log_items(kept)  # 일별 요약에는 화면 20개보다 넓게(후보 중 홍보성 제외 전부) 쌓는다
             except Exception as e:  # noqa: BLE001
                 log.warning("news log failed: %s", e)
+            picked = kept[:LIMIT]
             res = {"fetched_at": datetime.now(KST).isoformat(timespec="seconds"), "items": picked, "skipped": skipped[:20],
                    "feeds": [n for n, _, _ in FEEDS], "n_raw": len(items)}
             try:
@@ -392,4 +412,80 @@ def daily() -> dict:
     for m in sorted({x["date"][:7] for x in days}, reverse=True):
         recs = [r for day, rs in by_day.items() if day[:7] == m for r in rs]
         months.append({"month": m, **_agg(recs), "days": sum(1 for x in days if x["date"][:7] == m)})
-    return {"days": days, "months": months, "since": min(by_day) if by_day else None, "total": len(d)}
+    return {"days": days, "months": months, "since": min(by_day) if by_day else None, "total": len(d), "backfill": dict(BF_STATE),
+            "refresh_hours": REFRESH_HOURS, "backfill_days": BACKFILL_DAYS}
+
+
+# ---------- 백필 + 주기 실행 ----------
+BF_STATE = {"running": False, "stage": "", "done": 0, "total": 0, "last": None}
+
+
+def _day_counts() -> dict[str, int]:
+    c: dict[str, int] = {}
+    for r in _load_log().values():
+        d = (r.get("published") or "")[:10]
+        if len(d) == 10:
+            c[d] = c.get(d, 0) + 1
+    return c
+
+
+def backfill_day(day: str, per_day: int = BACKFILL_PER_DAY) -> int:
+    """하루치: Google News 날짜 검색(영문·국문) → 홍보성 제외·중복 제거 → LLM 번역/판정 → 로그. 반환: 기록한 수."""
+    nxt = (datetime.fromisoformat(day) + timedelta(days=1)).strftime("%Y-%m-%d")
+    items = _fetch_feed("Google News", _gnews_url(GN_EN, "en", day, nxt), "en") + _fetch_feed("Google 뉴스", _gnews_url(GN_KO, "ko", day, nxt), "ko")
+    items = [it for it in items if it["published"][:10] == day]  # 구글이 범위를 느슨하게 잡으므로 발행일 재확인
+    picked = _select(items, pool=per_day + 8, max_age=None)
+    if not picked:
+        return 0
+    try:
+        _translate(picked)
+    except Exception as e:  # noqa: BLE001
+        log.warning("news backfill translate failed %s: %s", day, e)
+    kept = [it for it in picked if not it.get("skip")][:per_day]
+    _log_items(kept)
+    return len(kept)
+
+
+def ensure_days(days: int = BACKFILL_DAYS, min_items: int = BACKFILL_MIN) -> dict:
+    """최근 days 일 중 로그가 min_items 미만인 날짜(오늘 제외)를 백필. 동시 실행은 하나만."""
+    if BF_STATE["running"]:
+        return {"skipped": "already running"}
+    BF_STATE.update(running=True, stage="확인", done=0, total=0)
+    try:
+        counts = _day_counts()
+        today = datetime.now(KST).date()
+        targets = [(today - timedelta(days=i)).isoformat() for i in range(1, days + 1)]
+        targets = [d for d in targets if counts.get(d, 0) < min_items]
+        BF_STATE.update(total=len(targets))
+        filled = {}
+        for i, d in enumerate(targets):
+            BF_STATE.update(stage=f"백필 {d}", done=i)
+            try:
+                filled[d] = backfill_day(d)
+            except Exception as e:  # noqa: BLE001
+                log.warning("news backfill failed %s: %s", d, e)
+            time.sleep(1.0)  # Google News 요청 간격
+        BF_STATE.update(stage="완료", done=len(targets), last=datetime.now(KST).isoformat(timespec="seconds"))
+        log.info("news backfill: %d days, %s items", len(filled), sum(filled.values()))
+        return {"days": filled}
+    finally:
+        BF_STATE["running"] = False
+
+
+def loop() -> None:
+    """서버 기동 2분 뒤 첫 수집·백필, 이후 REFRESH_HOURS 마다 수집, 매일 07:00 이후 첫 회차에 지난 날짜 백필 점검."""
+    time.sleep(120)
+    last_bf_day = None
+    while True:
+        try:
+            refresh()
+        except Exception as e:  # noqa: BLE001
+            log.warning("news periodic refresh failed: %s", e)
+        now = datetime.now(KST)
+        if last_bf_day != now.date() and (last_bf_day is None or now.hour >= 7):
+            last_bf_day = now.date()
+            try:
+                ensure_days()
+            except Exception as e:  # noqa: BLE001
+                log.warning("news backfill failed: %s", e)
+        time.sleep(max(600, REFRESH_HOURS * 3600))

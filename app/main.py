@@ -92,6 +92,7 @@ def _start_scheduler():
     autosell.KOSDAQ_TOP = KOSDAQ_TOP
     threading.Thread(target=autosell.loop, daemon=True).start()
     threading.Thread(target=fills.loop, daemon=True).start()
+    threading.Thread(target=news.loop, daemon=True).start()  # 뉴스 주기 수집 + 지난 날짜 백필 (리포트 탭을 안 열어도 일별 기록이 쌓임)
     cfg = autosell.config()
     log.info("auto sell %s (dry=%s) KR %s KST / US %s NY", "on" if cfg["enabled"] else "off", cfg["dry"], cfg["time_kr"], cfg["time_us"])
 
@@ -334,6 +335,15 @@ def prob_model():
 def news_clip(refresh: bool = False):
     """미국 증시 주요 뉴스 20개 (CNBC·MarketWatch·Google News 영문/국문 RSS, 20분 캐시, 영문 제목 한글 번역)."""
     return news.get(force=refresh)
+
+
+@app.post("/api/news/backfill")
+def news_backfill(days: int = Query(news.BACKFILL_DAYS, ge=1, le=120)):
+    """로그가 비어 있는 지난 날짜를 백그라운드로 백필 (Google News 날짜 검색). 진행 상태는 /api/news/daily 의 backfill."""
+    if news.BF_STATE["running"]:
+        return {"ok": False, "state": dict(news.BF_STATE)}
+    threading.Thread(target=news.ensure_days, kwargs={"days": days}, daemon=True).start()
+    return {"ok": True, "days": days}
 
 
 @app.get("/api/news/daily")
