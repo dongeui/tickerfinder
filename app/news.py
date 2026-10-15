@@ -35,6 +35,24 @@ KO_CACHE = DATA_DIR / "news_cache.json"
 TTL = timedelta(minutes=20)
 MAX_AGE = timedelta(hours=36)
 LIMIT = 20
+POOL = 32  # LLM 에 보낼 후보 수 (상품 홍보성 기사를 걸러낸 뒤 LIMIT 개만 남김)
+# 증권사·운용사 상품 기사(ETF/펀드 출시·상장, 순자산·설정액 돌파, 수상·캠페인)는 제외 — 시장 판단에 쓸모없음
+PR_PATTERNS = [
+    re.compile(r"(ETF|ETN|펀드|상품|리츠|랩|신탁|ELS|채권형|주식형).{0,20}(출시|신규\s*상장|상장(?!사|기업|폐지)|선보|론칭|출범|판매)"),
+    re.compile(r"(출시|신규\s*상장|선보|론칭).{0,20}(ETF|ETN|펀드|상품)"),
+    re.compile(r"(순자산|설정액|수탁고|운용자산|AUM|잔고|가입자|판매액|누적\s*판매).{0,16}(돌파|넘어|넘겨|달성|육박|돌파)"),
+    re.compile(r"(억|조)\s*원?\s*(돌파|달성|넘어|넘겨).{0,30}(ETF|펀드|상품|순자산|설정액)|(ETF|펀드|상품|순자산|설정액).{0,30}(억|조)\s*원?\s*(돌파|달성|넘어|넘겨)"),
+    re.compile(r"(자산운용|증권|투자증권|운용사|은행|보험|카드).{0,12}(출시|선정|수상|대상|1위|캠페인|이벤트|프로모션|기념|MOU|협약|업무협약|리뉴얼|오픈)"),
+    re.compile(r"(개인|자금|투자자|머니).{0,8}(순매수|유입|몰렸|몰린|몰려).{0,24}(ETF|펀드|상품)|(ETF|펀드|상품).{0,24}(순매수|유입).{0,10}(최대|1위|억|조)"),
+    re.compile(r"(ETF|펀드|상품|운용사).{0,12}(최대|1위|최단|최초|점유율)"),
+    re.compile(r"\b(launch(es|ed|ing)?|debuts?|unveils?|introduc(es|ed))\b.{0,40}\b(ETFs?|funds?|ETNs?)\b|\b(ETFs?|funds?)\b.{0,30}\b(launch(es|ed)?|debuts?)\b", re.I),
+    re.compile(r"\b(assets? under management|AUM|inflows?)\b.{0,40}\b(surpass|top|cross|hit|reach)", re.I),
+]
+
+
+def _is_product_pr(title: str, desc: str = "") -> bool:
+    t = f"{title} {desc}"
+    return any(p.search(t) for p in PR_PATTERNS)
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh) tickerfinder/1.0"}
 FEEDS = [
     ("CNBC", "https://www.cnbc.com/id/10000664/device/rss/rss.html", "en"),
@@ -152,8 +170,9 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         lines.append(f"{i}. [{it['lang']}] ({it['source']}) {it['title']}" + (f" — {it['desc']}" if it.get("desc") else ""))
     prompt = (
         "아래는 미국 증시 관련 뉴스 제목(일부는 요약 포함)이다. 각 항목에 대해 JSON 배열만 출력하라. 다른 말은 쓰지 마라.\n"
-        "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\"}, ...]\n"
+        "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\", \"skip\": false}, ...]\n"
         "규칙:\n"
+        "- skip: 증권사·자산운용사·은행의 상품 기사(ETF/펀드/ETN/랩 출시·상장, 순자산·설정액·판매액 돌파, 수상·캠페인·이벤트·제휴 홍보), 광고성·보도자료성 기사, 특정 종목 매수 추천 광고면 true. 시장·경제·기업 실적·정책·지수 동향 기사는 false.\n"
         "- title_ko: [en] 항목은 자연스러운 한국어 뉴스 제목으로 번역. 회사명·인명·제품명·티커·기관명 같은 고유명사는 번역/음역하지 말고 영문 원문 그대로 둔다 (예: Anthropic, Rocket Lab, Morgan Stanley, Neutron). "
         "단 나스닥·S&P500·다우·연준·월가·국채 같은 일반 시장 용어는 한국어로 쓴다. [ko] 항목은 원문 제목을 그대로 넣는다.\n"
         "- impact: 이 기사가 어떤 종목(가능하면 티커)·업종·시장(나스닥/S&P500/국내 증시/환율/금리 등)에 어떤 방향으로 영향을 줄 수 있는지 한국어 5줄 이내로, 줄바꿈은 \\n. 제목·요약에 근거한 것만 쓰고 추측을 늘리지 마라. "
@@ -171,7 +190,7 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         res = {}
         for a in arr:
             try:
-                res[int(a["i"])] = {"title_ko": str(a.get("title_ko") or "").strip(), "impact": str(a.get("impact") or "").strip()}
+                res[int(a["i"])] = {"title_ko": str(a.get("title_ko") or "").strip(), "impact": str(a.get("impact") or "").strip(), "skip": bool(a.get("skip"))}
             except (KeyError, TypeError, ValueError):
                 continue
         return res
@@ -189,7 +208,7 @@ def _translate(items: list[dict]) -> None:
     for i, it in enumerate(todo, 1):
         g = got.get(i)
         if g and (it["lang"] == "ko" or g["title_ko"]):
-            ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "src": "llm"}
+            ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "src": "llm"}
         else:
             t = _gtx_protected(it["title"]) if it["lang"] == "en" else ""
             ko[it["link"]] = {"title_ko": t or "", "impact": "", "src": "gtx" if t else "none"}
@@ -199,6 +218,7 @@ def _translate(items: list[dict]) -> None:
         it["title_ko"] = c.get("title_ko") or None
         it["impact"] = c.get("impact") or ""
         it["enrich"] = c.get("src")
+        it["skip"] = bool(c.get("skip"))
     if changed:
         if len(ko) > 600:  # 오래된 것부터 버림 (dict 는 삽입순)
             ko = dict(list(ko.items())[-400:])
@@ -214,7 +234,7 @@ def _select(items: list[dict]) -> list[dict]:
     shingles: list[set[str]] = []
     by_feed: dict[str, list[dict]] = {}
     for it in sorted(items, key=lambda x: x["_pub"], reverse=True):
-        if now - it["_pub"] > MAX_AGE:
+        if now - it["_pub"] > MAX_AGE or _is_product_pr(it["title"], it.get("desc", "")):
             continue
         k = _norm(it["title"])
         if not k or k in seen:
@@ -227,9 +247,9 @@ def _select(items: list[dict]) -> list[dict]:
         by_feed.setdefault(it["feed"], []).append(it)
     picked: list[dict] = []
     queues = [by_feed[n] for n, _, _ in FEEDS if by_feed.get(n)]
-    while len(picked) < LIMIT and any(queues):  # 피드별로 번갈아 최신 기사부터
+    while len(picked) < POOL and any(queues):  # 피드별로 번갈아 최신 기사부터 (LLM 이 홍보성으로 거른 뒤 LIMIT 개)
         for q in queues:
-            if q and len(picked) < LIMIT:
+            if q and len(picked) < POOL:
                 picked.append(q.pop(0))
     picked.sort(key=lambda x: x["_pub"], reverse=True)
     for it in picked:
@@ -270,7 +290,9 @@ def refresh() -> dict:
                 _translate(picked)
             except Exception as e:  # noqa: BLE001
                 log.warning("news translate failed: %s", e)
-            res = {"fetched_at": datetime.now(KST).isoformat(timespec="seconds"), "items": picked,
+            skipped = [it["title"] for it in picked if it.get("skip")]
+            picked = [it for it in picked if not it.get("skip")][:LIMIT]
+            res = {"fetched_at": datetime.now(KST).isoformat(timespec="seconds"), "items": picked, "skipped": skipped[:20],
                    "feeds": [n for n, _, _ in FEEDS], "n_raw": len(items)}
             try:
                 atomic_write_text(CACHE, json.dumps(res, ensure_ascii=False))
