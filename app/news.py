@@ -45,6 +45,8 @@ PR_PATTERNS = [
     re.compile(r"(자산운용|증권|투자증권|운용사|은행|보험|카드).{0,12}(출시|선정|수상|대상|1위|캠페인|이벤트|프로모션|기념|MOU|협약|업무협약|리뉴얼|오픈)"),
     re.compile(r"(개인|자금|투자자|머니).{0,8}(순매수|유입|몰렸|몰린|몰려).{0,24}(ETF|펀드|상품)|(ETF|펀드|상품).{0,24}(순매수|유입).{0,10}(최대|1위|억|조)"),
     re.compile(r"(ETF|펀드|상품|운용사).{0,12}(최대|1위|최단|최초|점유율)"),
+    re.compile(r"(자산운용|운용사|운용,|증권,|KODEX|TIGER|ACE|RISE|SOL|PLUS|KIWOOM|HANARO|1Q|TIME|WON).{0,40}(억|조)\s*원?\s*(돌파|달성|넘어|넘겨|육박)"),
+    re.compile(r"\[(여의도\s*단신|단신|포토|부고|인사|신상품|보도자료|이벤트)\]|보도자료|\bsponsored\b|\bpromotion\b", re.I),
     re.compile(r"\b(launch(es|ed|ing)?|debuts?|unveils?|introduc(es|ed))\b.{0,40}\b(ETFs?|funds?|ETNs?)\b|\b(ETFs?|funds?)\b.{0,30}\b(launch(es|ed)?|debuts?)\b", re.I),
     re.compile(r"\b(assets? under management|AUM|inflows?)\b.{0,40}\b(surpass|top|cross|hit|reach)", re.I),
 ]
@@ -172,7 +174,8 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         "아래는 미국 증시 관련 뉴스 제목(일부는 요약 포함)이다. 각 항목에 대해 JSON 배열만 출력하라. 다른 말은 쓰지 마라.\n"
         "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\", \"skip\": false}, ...]\n"
         "규칙:\n"
-        "- skip: 증권사·자산운용사·은행의 상품 기사(ETF/펀드/ETN/랩 출시·상장, 순자산·설정액·판매액 돌파, 수상·캠페인·이벤트·제휴 홍보), 광고성·보도자료성 기사, 특정 종목 매수 추천 광고면 true. 시장·경제·기업 실적·정책·지수 동향 기사는 false.\n"
+        "- skip: 다음이면 true — 증권사·자산운용사·은행의 상품 기사(ETF/펀드/ETN/랩 출시·상장, 순자산·설정액·판매액·자금유입 돌파, 수상·캠페인·이벤트·제휴 홍보, 단신 모음), 광고성·보도자료성 기사, 특정 종목·상품 매수 추천 광고('이 ETF 가 월 $100 를…' 류), 개인 재무상담·상속·부동산·가족 사연 같은 라이프 칼럼, 증시와 무관한 기사. "
+        "시장·경제·기업 실적·정책·금리·환율·지수 동향·대형주 뉴스는 false.\n"
         "- title_ko: [en] 항목은 자연스러운 한국어 뉴스 제목으로 번역. 회사명·인명·제품명·티커·기관명 같은 고유명사는 번역/음역하지 말고 영문 원문 그대로 둔다 (예: Anthropic, Rocket Lab, Morgan Stanley, Neutron). "
         "단 나스닥·S&P500·다우·연준·월가·국채 같은 일반 시장 용어는 한국어로 쓴다. [ko] 항목은 원문 제목을 그대로 넣는다.\n"
         "- impact: 이 기사가 어떤 종목(가능하면 티커)·업종·시장(나스닥/S&P500/국내 증시/환율/금리 등)에 어떤 방향으로 영향을 줄 수 있는지 한국어 5줄 이내로, 줄바꿈은 \\n. 제목·요약에 근거한 것만 쓰고 추측을 늘리지 마라. "
@@ -202,7 +205,7 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
 def _translate(items: list[dict]) -> None:
     """캐시에 없는 기사만 모아 LLM 에 한 번 묻고, 실패분은 구글 번역으로 제목만."""
     ko = _load_ko()
-    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict)]
+    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or (ko[it["link"]].get("src") == "llm" and "skip" not in ko[it["link"]])]  # skip 판정이 없는 옛 캐시는 다시 묻는다
     got = _llm_enrich(todo) if todo else {}
     changed = False
     for i, it in enumerate(todo, 1):
