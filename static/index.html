@@ -51,7 +51,7 @@ input[type=text]{width:140px}
 .note{color:var(--muted);font-size:12px;margin:4px 0 10px}
 .summary{display:flex;gap:16px;align-items:center;margin:6px 0 8px;font-size:13px;color:var(--muted)}
 .summary b{color:var(--fg)}
-table{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:clip}  /* hidden 이면 안쪽 sticky(.xbox)가 화면에 고정되지 않음 */
 th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--muted);font-weight:500;cursor:pointer;user-select:none;background:var(--panel2);position:sticky;top:0}
 th.sorted{color:var(--fg)}
@@ -71,7 +71,7 @@ svg text{fill:var(--muted);font-size:10px;font-family:var(--mono)}
 textarea{width:100%;min-height:60px}
 tr.xopen td{background:#1b1f28}
 tr.xrow td,tr.xrow:hover td{padding:0;background:var(--bg);white-space:normal;text-align:left;cursor:default}
-.xbox{padding:10px 12px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.xbox{padding:10px 12px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);position:sticky;left:0;box-sizing:border-box}  /* 표가 화면보다 넓어도 펼친 차트(가격축 포함)는 보이는 폭 안에 (fitBoxes) */
 .ctool{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
 .ctool .seg{margin:0}.ctool .seg button{padding:4px 10px;font-size:12px}
 .cwrap{position:relative;height:440px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
@@ -834,12 +834,24 @@ function openRow(tr, t, p){
   tr.classList.add('xopen');
   const x=document.createElement('tr'); x.className='xrow'; x.innerHTML=`<td colspan="${colCount(p)}"><div class="xbox"></div></td>`;
   tr.after(x);
+  fitBoxes();
   buildChartBox(x.querySelector('.xbox'), t, p);
 }
+// 표(특히 매수 탭)가 창보다 넓으면 펼친 행의 차트도 표 폭만큼 늘어나 오른쪽 가격축이 화면 밖으로 나간다.
+// 펼친 상자를 sticky 로 두고 폭을 "창 너비 - 표 왼쪽 여백×2" 로 맞춰 가로 스크롤과 무관하게 항상 보이게 한다.
+function fitBoxes(){
+  const vw = document.documentElement.clientWidth;
+  for(const p of ['b','s','e']){
+    const tb=$('#'+p+'_table'); const box=tb?.querySelector('.xbox'); if(!box) continue;
+    const left = Math.max(0, tb.getBoundingClientRect().left + scrollX);
+    box.style.left = left+'px'; box.style.width = Math.max(320, vw - left*2)+'px';
+  }
+}
+window.addEventListener('resize', fitBoxes);
 function restoreRow(p){ if(!XP[p]) return; const tr=$('#'+p+'_table').querySelector(`tr[data-t="${CSS.escape(XP[p])}"]`); if(tr) openRow(tr, XP[p], p); else XP[p]=null; }
 // 재렌더 전에 펼친 행(차트 포함)을 떼어 두고, 재렌더 후 같은 종목 행 아래에 다시 붙인다. 종목이 표에서 사라졌으면 그때 정리.
 function detachRow(p){ if(!XP[p]) return null; const x=$('#'+p+'_table tr.xrow'); if(!x) return null; x.remove(); return x; }
-function reattachRow(p, x){ if(!x){ restoreRow(p); return; } const tr=$('#'+p+'_table').querySelector(`tr[data-t="${CSS.escape(XP[p])}"]`); if(!tr){ disposeChart(p); XP[p]=null; return; } tr.classList.add('xopen'); x.firstElementChild.colSpan=colCount(p); tr.after(x); }
+function reattachRow(p, x){ if(!x){ restoreRow(p); return; } const tr=$('#'+p+'_table').querySelector(`tr[data-t="${CSS.escape(XP[p])}"]`); if(!tr){ disposeChart(p); XP[p]=null; return; } tr.classList.add('xopen'); x.firstElementChild.colSpan=colCount(p); tr.after(x); fitBoxes(); }
 async function chartData(t, tf){
   const k=t+'|'+tf; if(CH_CACHE[k]) return CH_CACHE[k];
   const r = await fetch('/api/chart/'+encodeURIComponent(t)+'?tf='+tf); if(!r.ok) throw new Error('chart '+r.status);
