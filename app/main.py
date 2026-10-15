@@ -19,7 +19,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, autosell, backtest, chart, etf, fills, kis, longhist, positions, profile, scanner
+from . import analysis, autosell, backtest, chart, etf, fills, kis, longhist, news, positions, profile, scanner
 from .universe import DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -328,6 +328,12 @@ def prob_model():
             if _PM["data"] is None:
                 raise HTTPException(503, f"prob_model.json 읽기 실패: {e}")
     return _PM["data"]
+
+
+@app.get("/api/news")
+def news_clip(refresh: bool = False):
+    """미국 증시 주요 뉴스 20개 (CNBC·MarketWatch·Google News 영문/국문 RSS, 20분 캐시, 영문 제목 한글 번역)."""
+    return news.get(force=refresh)
 
 
 @app.get("/api/profile/{ticker}")

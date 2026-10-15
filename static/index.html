@@ -234,20 +234,12 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
 
   <!-- ===== 리포트 ===== -->
   <section class="panel" id="tab-report">
+    <div class="chart"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">미국 증시 주요 뉴스 <span id="n_meta" style="font-weight:400;color:var(--muted);font-size:12px"></span><button class="ghost" id="n_reload" style="padding:2px 8px;font-size:11px">새로고침</button></h3>
+      <div class="note" style="margin:0 0 6px">CNBC·MarketWatch·Google News(영문/국문) RSS 에서 최근 36시간 기사를 모아 중복을 빼고 매체를 섞어 20개. 영문 제목은 구글 번역(오역 가능), 아래 회색이 원문. 20분마다 갱신.</div>
+      <div id="n_list"></div></div>
     <div class="note">매 스캔마다 날짜별 스냅샷이 쌓입니다(6월부터는 로컬 캐시로 백필). 시그널은 매수/매도 탭의 현재 임계값으로 다시 계산됩니다.</div>
     <div class="chart"><h3>나스닥 / 코스피 RSI(14) 추이 (음영=나스닥 매수 환경 구간)</h3><div id="chIdx"></div></div>
     <div class="chart"><h3>날짜별 시그널 종목 수</h3><div id="chCnt"></div></div>
-
-    <div class="filters">
-      <div class="grp"><label>시그널 이벤트</label><select id="r_mode"><option value="buy">매수 진입</option><option value="sell">매도 진입</option></select></div>
-      <div class="grp"><label><input type="checkbox" id="r_mkt"> 나스닥 조건 충족일만 (매수)</label></div>
-      <div class="grp"><label><input type="checkbox" id="r_kr"> 국내는 코스피 RSI</label></div>
-      <div class="grp"><label>지역</label><select id="r_region"><option value="">전체</option><option value="KR">국내</option><option value="US">미국</option></select></div>
-      <div class="grp"><label>검색</label><input type="text" id="r_q" placeholder="종목명/티커"></div>
-    </div>
-    <div class="gauges" id="r_summary"></div>
-    <div class="note">진입 = 전날 미충족 → 당일 충족. 이후 수익률은 진입일 종가 대비 5/10/20거래일 뒤 종가. 최대/최저는 20거래일 내 종가 기준.</div>
-    <div id="r_events"></div>
 
     <div class="chart" id="r_detail" style="display:none;margin-top:12px"><h3 class="dtitle"></h3><div class="dchart"></div></div>
     <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">날짜별 요약</h3>
@@ -410,7 +402,7 @@ function setRegion(r){
   REGION = r; try{ localStorage.setItem('tf_region', r); }catch(_){}
   if(MARKET && MKT_REGION[MARKET] !== r){ MARKET = null; try{ localStorage.removeItem('tf_market'); }catch(_){} }
   syncRegionUI(); syncHash(); render();
-  const rr = $('#r_region'); if(rr && rr.value !== r){ rr.value = r; if(REV) renderEvents(); }
+
 }
 function syncRegionUI(){
   document.querySelectorAll('#regionSeg button').forEach(b=>b.classList.toggle('on', b.dataset.r===REGION));
@@ -991,11 +983,11 @@ let _renderQueued=false; function scheduleRender(){ if(_renderQueued) return; _r
 function renderWithStreaks(){ clearTimeout(streakTimer); streakTimer=setTimeout(async()=>{ await loadStreaks(); render(); }, 400); }
 
 // ---------- 리포트 ----------
-let RH = null, REV = null;
+let RH = null;
 function thQuery(extra){ return new URLSearchParams({stoch_max:$('#b_st_max').value, stoch_tf_kr:$('#b_st_tf_kr').value, stoch_tf_us:$('#b_st_tf_us').value, band_tol:$('#b_ma_tol').value, mkt_lo:$('#b_mkt_lo').value, mkt_hi:$('#b_mkt_hi').value,
     rsi_d_min:$('#s_rd_min').value, rsi_w_lo:$('#s_rw_lo').value, rsi_w_hi:$('#s_rw_hi').value, ...extra}); }
 async function loadReport(){
-  if(!$('#r_region').dataset.init){ $('#r_region').value = REGION; $('#r_region').dataset.init='1'; }
+  loadNews();
   RH = (await (await fetch('/api/history?'+thQuery({limit:'400'}))).json()).days;
   const ix = RH.map(d=>[d.date, d.indices.IXIC?.rsi_d]).filter(p=>p[1]!=null), ks = RH.map(d=>[d.date, d.indices.KS11?.rsi_d]).filter(p=>p[1]!=null);
   $('#chIdx').innerHTML = RH.length ? lineChart([{name:'나스닥',color:'#4f8cff',pts:ix},{name:'코스피',color:'#f5b84f',pts:ks}], +$('#b_mkt_lo').value, +$('#b_mkt_hi').value) : '<div class="note">데이터 없음</div>';
@@ -1006,35 +998,28 @@ async function loadReport(){
       <td class="l" style="white-space:normal;max-width:380px;font-size:12px">${d.buy.map(x=>`<a href="#" data-t="${x.ticker}" class="tk">${x.name}</a>`).join(', ')}</td><td class="l" style="white-space:normal;max-width:380px;font-size:12px">${d.sell.map(x=>`<a href="#" data-t="${x.ticker}" class="tk">${x.name}</a>`).join(', ')}</td></tr>`; }
   $('#r_table').innerHTML = h + '</tbody></table>';
   bindTickerLinks($('#r_table'));
-  await loadEvents();
 }
-async function loadEvents(){
-  const mode = $('#r_mode').value;
-  REV = await (await fetch('/api/signals?'+thQuery({mode, require_mkt:$('#r_mkt').checked, use_kr_index:$('#r_kr').checked, limit:'1500'}))).json();
-  renderEvents();
+// ---------- 미국 증시 뉴스 ----------
+let NEWS = null;
+async function loadNews(refresh){
+  if(refresh) $('#n_meta').textContent = '받는 중…';
+  try{ NEWS = await (await fetch('/api/news'+(refresh?'?refresh=1':''))).json(); }catch(e){ NEWS = {items:[], error:String(e)}; }
+  renderNews();
 }
-function statCard(title, st){
-  if(!st || !st.n) return `<div class="g"><div class="t">${title}</div><div class="v">0</div></div>`;
-  const f = h => st['fwd'+h] ? `${h}일 <b class="${st['fwd'+h].mean>=0?'up':'dn'}">${st['fwd'+h].mean>=0?'+':''}${st['fwd'+h].mean}%</b> (승률 ${st['fwd'+h].win}%, n=${st['fwd'+h].n})` : `${h}일 -`;
-  return `<div class="g"><div class="t">${title}</div><div class="v">${st.n}<span style="font-size:12px;color:var(--muted)"> 건</span></div><div class="s">${f(5)}<br>${f(10)}<br>${f(20)}</div></div>`;
-}
-function renderEvents(){
-  if(!REV) return;
-  const S = REV.summary, mode = REV.mode;
-  $('#r_summary').innerHTML = statCard(`전체 (${REV.span?REV.span.join(' ~ '):''})`, S.all) + statCard('국내', S.KR) + statCard('미국', S.US) + statCard('시장 환경 충족일 진입', S.mkt_ok) + statCard('시장 환경 미충족일 진입', S.mkt_no);
-  const reg = $('#r_region').value, q = $('#r_q').value.trim().toLowerCase();
-  const evs = REV.events.filter(e => (!reg || e.region===reg) && (!q || e.name.toLowerCase().includes(q) || e.ticker.toLowerCase().includes(q)));
-  const pct = v => v==null ? '-' : `<span class="${v>=0?'up':'dn'}">${v>=0?'+':''}${fmtN(v,1)}%</span>`;
-  let h = `<table><thead><tr><th class="l">진입일</th><th class="l">종목</th><th class="l">시장</th><th>종가</th><th>일RSI</th><th>주RSI</th><th>스토K</th><th>밴드%</th><th>나스닥</th><th>+5일</th><th>+10일</th><th>+20일</th><th>20일 최고</th><th>20일 최저</th></tr></thead><tbody>`;
-  for(const e of evs.slice(0,400)){
-    h += `<tr><td class="l">${e.date}</td><td class="l"><a href="#" class="tk" data-t="${e.ticker}">${e.name}</a> <span style="color:var(--muted);font-size:11px">${e.ticker}</span></td><td class="l">${e.market}</td><td class="num">${e.region==='KR'?fmtN(e.close,0):fmtN(e.close,2)}</td><td class="num">${fmtN(e.rsi_d,1)}</td><td class="num">${fmtN(e.rsi_w,1)}</td><td class="num">${fmtN(e.stoch_k,1)}</td><td class="num">${fmtN(e.band_pos,1)}</td><td><span class="pill ${e.mkt_ok?'ok':''}">${e.mkt_ok?'충족':'-'}</span></td><td class="num">${pct(e.fwd5)}</td><td class="num">${pct(e.fwd10)}</td><td class="num">${pct(e.fwd20)}</td><td class="num">${pct(e.max20)}</td><td class="num">${pct(e.min20)}</td></tr>`;
-  }
-  $('#r_events').innerHTML = (evs.length ? h + '</tbody></table>' : '<div class="empty">이벤트 없음</div>') + `<div class="note">${evs.length}건 중 ${Math.min(400,evs.length)}건 표시 (${mode==='buy'?'매수':'매도'} 진입)</div>`;
-  bindTickerLinks($('#r_events'));
+function renderNews(){
+  const n = NEWS; if(!n) return;
+  const ago = n.fetched_at ? Math.max(0, Math.round((Date.now()-new Date(n.fetched_at).getTime())/60000)) : null;
+  $('#n_meta').textContent = (n.fetched_at ? `${ago}분 전 갱신` : '') + (n.stale ? ' · 피드 응답 없음, 이전 결과' : '') + (n.error ? ' · '+n.error : '');
+  if(!n.items?.length){ $('#n_list').innerHTML = '<div class="empty">뉴스를 받지 못했습니다. 새로고침을 눌러보세요.</div>'; return; }
+  const today = new Date().toISOString().slice(0,10);
+  const when = p => { const d = new Date(p); const hm = d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}); return p.slice(0,10)===new Date(Date.now()+9*3600e3).toISOString().slice(0,10) ? hm : `${p.slice(5,7)}/${p.slice(8,10)} ${hm}`; };
+  $('#n_list').innerHTML = '<ol style="margin:0;padding-left:0;list-style:none">' + n.items.map((it,i)=>`<li style="display:flex;gap:10px;padding:7px 4px;border-top:1px solid var(--line);align-items:baseline">
+      <span style="color:var(--muted);font-size:11px;min-width:76px;font-variant-numeric:tabular-nums">${when(it.published)}</span>
+      <span class="pill" style="font-size:10px;min-width:60px;text-align:center">${esc(it.source)}</span>
+      <span style="flex:1"><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;font-weight:600">${esc(it.title_ko||it.title)}</a>${it.title_ko?`<div style="color:var(--muted);font-size:11px;margin-top:2px">${esc(it.title)}</div>`:''}</span></li>`).join('') + '</ol>';
 }
 function bindTickerLinks(root){ root.querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); showTicker(a.dataset.t,'r');}); }
-['r_mode','r_mkt','r_kr'].forEach(id=>$('#'+id).addEventListener('change', loadEvents));
-['r_region','r_q'].forEach(id=>$('#'+id).addEventListener('input', renderEvents));
+$('#n_reload').onclick = ()=>loadNews(true);
 
 async function showTicker(t, target='r'){
   const d = await (await fetch('/api/ticker/'+encodeURIComponent(t))).json();
