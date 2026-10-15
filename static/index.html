@@ -545,7 +545,7 @@ function evalRows(mode){
 
 // ---------- 테이블 ----------
 const COLS = {
-  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['streak','체류','l'],['prob','추천확률 (보수적)'],['exp','기대수익 20일 / 60일']],
+  buy: [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['streak','체류','l'],['prob','추천확률 (보수적)'],['exp','기대수익 20일 / 60일']],  // 50일선 기울기 열은 2026-10-15 제거(필터와 상세에는 남음)
   sell:[['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['rsi','일RSI / 주RSI'],['streak','체류','l']],
 };
 function fmtCap(s){ if(s.marcap==null) return '-'; if(s.region==='KR'){ const j=s.marcap/1e12; return j>=1 ? fmtN(j,j>=10?0:1)+'조' : fmtN(s.marcap/1e8,0)+'억'; } const b=s.marcap/1e9; return b>=1000 ? '$'+fmtN(b/1000,2)+'T' : '$'+fmtN(b,0)+'B'; }
@@ -664,7 +664,7 @@ function renderTable(mode){
 // 상단 국내/미국 선택과 무관. 분석 기준은 미국 설정(스토캐 시간대 b_st_tf_us, 나스닥 RSI 게이트, 미국 모델·3분위)을 쓰므로 region 을 US 로 바꿔 평가한다.
 let ETF = null, etfTimer = null;
 const ETF_KIND_ORDER = ['대표지수','섹터·테마','배당','커버드콜','레버리지·인버스'];
-const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['slope50','50일선 기울기'],['stoch','스토캐 %K 일 / 주'],['band','밴드 %'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['stat','ETF 실측 승률 (60일 / 180일)','l']];
+const ETF_COLS = [['name','종목','l'],['marcap','시총'],['trend','추세 (60일)','l'],['slope','200일선 기울기'],['rsi','일RSI / 주RSI'],['sig','신호','l'],['stat','ETF 실측 승률 (60일 / 180일)','l']];  // 50일선 기울기·스토캐·밴드 열은 2026-10-15 제거(신호 툴팁·상세에 남음)
 // scripts/etf_conditions.py (2026-10-14): 다음날 시가 진입, 첫 충족일만. H=미국 ETF 11종 달러 2000~ (규칙 C: 주스토≤25&밴드±3&게이트), open=같은 ETF 원화환산 2004~ (규칙 A: 주스토≤25&게이트). nogate=같은 종목조건을 게이트 없이, base=모든 날.
 const ETF_STATS = {
   H:    {rule:'스토캐스틱 + 밴드 + 게이트', n:198, win60:80, avg60:7.8, p10_60:-5.1, win180:85, avg180:15.7, p10_180:-5.7, nogate:{n:520, win60:69, avg60:3.3, win180:78}, base:{win60:67, avg60:2.6, win180:73, avg180:7.9}, src:'미국 ETF 11종 달러 기준 2000~2026'},
