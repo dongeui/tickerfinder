@@ -183,8 +183,19 @@ def _gtx_protected(title: str) -> str | None:
     return ko
 
 
+LLM_CHUNK = 40
+
+
 def _llm_enrich(items: list[dict]) -> dict[int, dict]:
-    """claude -p 한 번으로 번역 + 영향 정리. {번호: {title_ko, impact}}. 실패 시 {}."""
+    """claude -p 로 번역 + 영향 정리 (LLM_CHUNK 개씩 나눠 호출, 번호는 전체 기준). {번호: {title_ko, impact, tone, skip}}. 실패 시 {}."""
+    res: dict[int, dict] = {}
+    for off in range(0, len(items), LLM_CHUNK):
+        part = _llm_enrich_once(items[off:off + LLM_CHUNK])
+        res.update({off + i: v for i, v in part.items()})
+    return res
+
+
+def _llm_enrich_once(items: list[dict]) -> dict[int, dict]:
     exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     if not os.path.exists(exe) or not items:
         return {}
@@ -489,3 +500,72 @@ def loop() -> None:
             except Exception as e:  # noqa: BLE001
                 log.warning("news backfill failed: %s", e)
         time.sleep(max(600, REFRESH_HOURS * 3600))
+
+
+def _sample_weekdays(year: int, month: int, k: int) -> list[str]:
+    """그 달의 평일 중 k 개를 고르게 뽑는다 (시장 뉴스는 평일에 몰림)."""
+    import calendar
+    days = [datetime(year, month, d) for d in range(1, calendar.monthrange(year, month)[1] + 1)]
+    wd = [d for d in days if d.weekday() < 5]
+    if len(wd) <= k:
+        return [d.strftime("%Y-%m-%d") for d in wd]
+    idx = [round(i * (len(wd) - 1) / (k - 1)) for i in range(k)] if k > 1 else [0]
+    return [wd[i].strftime("%Y-%m-%d") for i in sorted(set(idx))]
+
+
+def backfill_days_batch(days: list[str], per_day: int) -> dict[str, int]:
+    """여러 날짜를 한 번에: 날짜별로 Google News 날짜 검색 → 선별 → 전체를 LLM 에 묶어 보냄(40개씩) → 날짜별 기록."""
+    per_day_items: dict[str, list[dict]] = {}
+    for day in days:
+        nxt = (datetime.fromisoformat(day) + timedelta(days=1)).strftime("%Y-%m-%d")
+        items = _fetch_feed("Google News", _gnews_url(GN_EN, "en", day, nxt), "en")
+        time.sleep(0.8)
+        items += _fetch_feed("Google 뉴스", _gnews_url(GN_KO, "ko", day, nxt), "ko")
+        time.sleep(0.8)
+        items = [it for it in items if it["published"][:10] == day]
+        per_day_items[day] = _select(items, pool=per_day + 6, max_age=None)
+    allitems = [it for day in days for it in per_day_items[day]]
+    if allitems:
+        try:
+            _translate(allitems)
+        except Exception as e:  # noqa: BLE001
+            log.warning("news batch translate failed: %s", e)
+    out = {}
+    for day in days:
+        kept = [it for it in per_day_items[day] if not it.get("skip")][:per_day]
+        if kept:
+            _log_items(kept)
+        out[day] = len(kept)
+    return out
+
+
+def backfill_months(start: str, end: str, days_per_month: int = 8, per_day: int = 10, min_items: int = 4) -> dict:
+    """start~end(YYYY-MM) 각 달에서 평일 days_per_month 일을 표본으로 뽑아 백필 (최근 달부터). 이미 min_items 이상 있는 날짜는 건너뜀."""
+    while BF_STATE["running"]:  # 일별 백필이 돌고 있으면 끝날 때까지 대기
+        time.sleep(15)
+    BF_STATE.update(running=True, stage="월별 백필 준비", done=0, total=0)
+    try:
+        y0, m0 = (int(x) for x in start.split("-")); y1, m1 = (int(x) for x in end.split("-"))
+        months = []
+        y, m = y1, m1
+        while (y, m) >= (y0, m0):
+            months.append((y, m)); m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        BF_STATE.update(total=len(months))
+        filled: dict[str, int] = {}
+        for i, (y, m) in enumerate(months):
+            counts = _day_counts()
+            days = [d for d in _sample_weekdays(y, m, days_per_month) if counts.get(d, 0) < min_items and d < datetime.now(KST).strftime("%Y-%m-%d")]
+            BF_STATE.update(stage=f"월별 백필 {y}-{m:02d} ({len(days)}일)", done=i)
+            if days:
+                try:
+                    r = backfill_days_batch(days, per_day)
+                    filled[f"{y}-{m:02d}"] = sum(r.values())
+                except Exception as e:  # noqa: BLE001
+                    log.warning("news month backfill failed %s-%02d: %s", y, m, e)
+        BF_STATE.update(stage="완료", done=len(months), last=datetime.now(KST).isoformat(timespec="seconds"))
+        log.info("news month backfill: %s", filled)
+        return {"months": filled}
+    finally:
+        BF_STATE["running"] = False

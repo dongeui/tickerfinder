@@ -346,6 +346,14 @@ def news_backfill(days: int = Query(news.BACKFILL_DAYS, ge=1, le=120)):
     return {"ok": True, "days": days}
 
 
+@app.post("/api/news/backfill_months")
+def news_backfill_months(start: str = Query("2020-01", pattern=r"^\d{4}-\d{2}$"), end: str = Query("2026-09", pattern=r"^\d{4}-\d{2}$"),
+                         days_per_month: int = Query(8, ge=1, le=23), per_day: int = Query(10, ge=1, le=30)):
+    """지난 달들을 평일 표본(달마다 days_per_month 일, 날짜당 per_day 개)으로 백필 — 백그라운드. 진행 상태는 /api/news/daily 의 backfill."""
+    threading.Thread(target=news.backfill_months, args=(start, end, days_per_month, per_day), daemon=True).start()
+    return {"ok": True, "start": start, "end": end, "days_per_month": days_per_month, "per_day": per_day}
+
+
 @app.get("/api/news/daily")
 def news_daily():
     """표시됐던 기사 누적(data/news_log.json)을 발행일 기준 일별·월별로 집계: 기사 수, 긍정/우려/중립/혼재, 상승·하락 우위 판정."""
