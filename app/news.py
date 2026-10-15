@@ -199,6 +199,26 @@ def _gtx_protected(title: str) -> str | None:
 
 
 LLM_CHUNK = 40
+
+
+def _parse_llm_json(out: str) -> list | None:
+    """모델 출력에서 JSON 배열을 꺼낸다. 제어문자(줄바꿈 포함 문자열)는 허용하고, 배열 전체가 깨졌으면 객체 단위로 건질 수 있는 것만 건진다."""
+    m = re.search(r"\[.*\]", out, re.S)
+    txt = m.group(0) if m else out
+    try:
+        arr = json.loads(txt, strict=False)
+        return arr if isinstance(arr, list) else None
+    except ValueError:
+        pass
+    objs = []
+    for om in re.finditer(r"\{[^{}]*\}", txt, re.S):
+        try:
+            o = json.loads(om.group(0), strict=False)
+            if isinstance(o, dict) and "i" in o:
+                objs.append(o)
+        except ValueError:
+            continue
+    return objs or None
 LLM_PARALLEL = max(1, min(4, int(os.environ.get("NEWS_LLM_PARALLEL", "3"))))  # 묶음을 동시에 몇 개까지 (백필 속도)
 
 
@@ -251,8 +271,10 @@ def _llm_enrich_once(items: list[dict]) -> dict[int, dict]:
         if proc.returncode != 0 or not out:
             log.warning("news llm failed rc=%s: %s", proc.returncode, (err or out)[:300])
             return {}
-        m = re.search(r"\[.*\]", out, re.S)
-        arr = json.loads(m.group(0) if m else out)
+        arr = _parse_llm_json(out)
+        if arr is None:
+            log.warning("news llm: JSON 파싱 실패 (%d items): %s", len(items), out[:200].replace("\n", " "))
+            return {}
         res = {}
         for a in arr:
             try:
@@ -583,6 +605,7 @@ def loop() -> None:
             try:
                 if "skipped" not in ensure_days():  # 월별 백필 중이면 다음 회차에 다시
                     last_bf_day = now.date()
+                    retag_missing()  # LLM 실패로 함의가 비어 있는 기사 재판정
             except Exception as e:  # noqa: BLE001
                 log.warning("news backfill failed: %s", e)
         time.sleep(max(600, REFRESH_HOURS * 3600))
@@ -658,3 +681,32 @@ def backfill_months(start: str, end: str, days_per_month: int = 8, per_day: int 
     finally:
         BF_STATE["running"] = False
         BF_LOCK.release()
+
+
+def retag_missing(limit: int = 400) -> dict:
+    """로그에 함의(tone)가 비어 있는 기사(LLM 실패분)를 모아 다시 판정받아 로그·캐시를 갱신. 백필된 과거 날짜도 포함."""
+    with _FILE_LOCK:
+        d = _load_log()
+    todo = [{"link": l, "title": r["title"], "source": r.get("source") or "", "published": r.get("published") or "",
+             "lang": "ko" if re.search(r"[가-힣]", r["title"]) else "en", "desc": ""}
+            for l, r in d.items() if not r.get("tone")][:limit]
+    if not todo:
+        return {"retagged": 0}
+    with _FILE_LOCK:  # 캐시의 불완전 항목을 지워 _translate 가 다시 묻게 한다
+        ko = _load_ko()
+        for it in todo:
+            ko.pop(it["link"], None)
+        atomic_write_text(KO_CACHE, json.dumps(ko, ensure_ascii=False))
+    _translate(todo)
+    kept = [it for it in todo if it.get("tone")]
+    _log_items(kept)
+    skipped = [it["link"] for it in todo if it.get("skip")]
+    if skipped:
+        with _FILE_LOCK:
+            d = _load_log(strict=False)
+            for l in skipped:
+                d.pop(l, None)
+            atomic_write_text(LOG, json.dumps(d, ensure_ascii=False))
+            _DAILY_CACHE["key"] = None
+    log.info("news retag: %d asked, %d tagged, %d removed as promo", len(todo), len(kept), len(skipped))
+    return {"asked": len(todo), "tagged": len(kept), "removed": len(skipped)}

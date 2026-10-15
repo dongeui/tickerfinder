@@ -362,6 +362,12 @@ def news_backfill_months(start: str = Query("2020-01", pattern=r"^\d{4}-(0[1-9]|
     return {"ok": True, "start": start, "end": end, "days_per_month": days_per_month, "per_day": per_day}
 
 
+@app.post("/api/news/retag")
+def news_retag():
+    """함의(tone)가 비어 있는 로그 기사(LLM 실패분)를 다시 판정 (동기, 수백 건이면 1~2분)."""
+    return news.retag_missing()
+
+
 @app.get("/api/news/daily")
 def news_daily(day: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
     """표시됐던 기사 누적(data/news_log.json)을 발행일 기준 일별·월별로 집계: 기사 수, 긍정/우려/중립/혼재, 상승·하락 우위 판정. day 를 주면 그날 기사 목록도."""
