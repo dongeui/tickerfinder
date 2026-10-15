@@ -62,9 +62,19 @@ def _set(**kw):
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    """임시파일에 쓴 뒤 교체. 임시파일 이름은 호출마다 다르게(두 스레드가 같은 .tmp 를 번갈아 쓰면 반쯤 쓰인 파일이 교체될 수 있음)."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 SCAN_LOCK = threading.Lock()  # run_scan 과 etf.run 이 공유: 같은 가격 캐시를 동시에 쓰지 않도록
@@ -77,6 +87,15 @@ def region_of(ticker: str) -> str:
 
 KR_CLOSE_FINAL = "15:35"  # 정규장 15:30 마감 → 이후 종가 확정 (15:40~16:00 장후 종가매매는 종가를 바꾸지 않음)
 KR_AFTER_HOURS_FROM = "16:00"  # 16:00~18:00 시간외 단일가: 네이버 일봉이 그 체결가를 당일 종가로 내보냄 → 캐시의 정규장 종가를 지킨다
+# 장이 1시간 늦게 열고 닫는 날(수능일: 10:00~16:30). 환경변수 KR_LATE_CLOSE_DATES="2026-11-19,2027-11-18" 로 덮어쓸 수 있음.
+KR_LATE_CLOSE_DATES = set(d.strip() for d in os.environ.get("KR_LATE_CLOSE_DATES", "2026-11-19,2027-11-18").split(",") if d.strip())
+
+
+def _kr_times(now: datetime) -> tuple[str, str]:
+    """(종가 확정 시각, 시간외 시작 시각). 늦게 닫는 날은 둘 다 1시간 뒤."""
+    if now.strftime("%Y-%m-%d") in KR_LATE_CLOSE_DATES:
+        return "16:35", "17:00"
+    return KR_CLOSE_FINAL, KR_AFTER_HOURS_FROM
 
 
 def is_partial_bar(df: pd.DataFrame, region: str) -> bool:
@@ -89,7 +108,7 @@ def is_partial_bar(df: pd.DataFrame, region: str) -> bool:
         return False
     if region == "KR":
         now = datetime.now(KST)
-        return now.strftime("%H:%M") < KR_CLOSE_FINAL and df.index[-1].date() == now.date()
+        return now.strftime("%H:%M") < _kr_times(now)[0] and df.index[-1].date() == now.date()
     now = datetime.now(ZoneInfo("America/New_York"))
     return now.strftime("%H:%M") < "16:05" and df.index[-1].date() == now.date()
 
@@ -206,7 +225,7 @@ def _keep_regular_close(code: str, new: pd.DataFrame | None, now: datetime | Non
     if new is None or not len(new):
         return new
     now = now or datetime.now(KST)
-    if now.strftime("%H:%M") < KR_AFTER_HOURS_FROM:
+    if now.strftime("%H:%M") < _kr_times(now)[1]:
         return new
     old = load_cache(code)
     if old is None or old.index[-1].date() != now.date():
@@ -317,7 +336,7 @@ def fetch_us(symbols: list[str], chunk: int = YF_CHUNK) -> dict[str, pd.DataFram
     if missed:
         time.sleep(2)
         log.info("US retry for %d symbols missing from batch", len(missed))
-        retry = [(part, _incr_start(part[0]) if all(_cache_fresh(x) for x in part) else _start_date())
+        retry = [(part, min(_incr_start(x) for x in part) if all(_cache_fresh(x) for x in part) else _start_date())  # 묶음 중 가장 오래된 캐시 기준
                  for part, _ in _chunks(missed, "")]
         for part, _start, got in _yf_many(retry):
             for s in part:

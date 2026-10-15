@@ -340,24 +340,32 @@ def news_clip(refresh: bool = False):
 @app.post("/api/news/backfill")
 def news_backfill(days: int = Query(news.BACKFILL_DAYS, ge=1, le=120)):
     """로그가 비어 있는 지난 날짜를 백그라운드로 백필 (Google News 날짜 검색). 진행 상태는 /api/news/daily 의 backfill."""
-    if news.BF_STATE["running"]:
+    if news.BF_LOCK.locked():
         return {"ok": False, "state": dict(news.BF_STATE)}
     threading.Thread(target=news.ensure_days, kwargs={"days": days}, daemon=True).start()
     return {"ok": True, "days": days}
 
 
 @app.post("/api/news/backfill_months")
-def news_backfill_months(start: str = Query("2020-01", pattern=r"^\d{4}-\d{2}$"), end: str = Query("2026-09", pattern=r"^\d{4}-\d{2}$"),
+def news_backfill_months(start: str = Query("2020-01", pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), end: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
                          days_per_month: int = Query(8, ge=1, le=23), per_day: int = Query(10, ge=1, le=30)):
-    """지난 달들을 평일 표본(달마다 days_per_month 일, 날짜당 per_day 개)으로 백필 — 백그라운드. 진행 상태는 /api/news/daily 의 backfill."""
+    """지난 달들을 평일 표본(달마다 days_per_month 일, 날짜당 per_day 개)으로 백필 — 백그라운드(일별 백필이 돌고 있으면 그 뒤에 이어서). 진행 상태는 /api/news/daily 의 backfill.
+    end 기본값은 지난달."""
+    if end is None:
+        first = datetime.now(scanner.KST).replace(day=1)
+        end = (first - timedelta(days=1)).strftime("%Y-%m")
+    if start > end:
+        raise HTTPException(400, "start 가 end 보다 늦습니다")
+    if news.BF_LOCK.locked() and news.BF_STATE.get("stage", "").startswith("월별"):
+        return {"ok": False, "state": dict(news.BF_STATE)}
     threading.Thread(target=news.backfill_months, args=(start, end, days_per_month, per_day), daemon=True).start()
     return {"ok": True, "start": start, "end": end, "days_per_month": days_per_month, "per_day": per_day}
 
 
 @app.get("/api/news/daily")
-def news_daily():
-    """표시됐던 기사 누적(data/news_log.json)을 발행일 기준 일별·월별로 집계: 기사 수, 긍정/우려/중립/혼재, 상승·하락 우위 판정."""
-    return news.daily()
+def news_daily(day: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    """표시됐던 기사 누적(data/news_log.json)을 발행일 기준 일별·월별로 집계: 기사 수, 긍정/우려/중립/혼재, 상승·하락 우위 판정. day 를 주면 그날 기사 목록도."""
+    return news.daily(day)
 
 
 @app.get("/api/profile/{ticker}")

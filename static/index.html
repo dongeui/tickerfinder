@@ -984,9 +984,13 @@ function renderWithStreaks(){ clearTimeout(streakTimer); streakTimer=setTimeout(
 // ---------- 리포트 ----------
 async function loadReport(){ loadNews(); loadNewsDaily(); }
 // ---------- 뉴스 일별·월별 요약 ----------
-let ND = null, ndOpen = {};
+let ND = null, ndOpen = {}, ndItems = {};
 async function loadNewsDaily(){
   try{ ND = await (await fetch('/api/news/daily')).json(); }catch(e){ ND = {days:[], months:[]}; }
+  renderNewsDaily();
+}
+async function loadNewsDay(day){  // 날짜를 펼칠 때만 그날 기사 목록을 받는다
+  try{ const r = await (await fetch('/api/news/daily?day='+day)).json(); ndItems[day] = r.items||[]; }catch(e){ ndItems[day] = []; }
   renderNewsDaily();
 }
 const VERD_CLS = {'상승 우위':'ok', '하락 우위':'no', '혼조':'warn'};
@@ -996,12 +1000,14 @@ function renderNewsDaily(){
   const d = ND; if(!d) return;
   const bf = d.backfill||{};
   $('#nd_meta').textContent = (d.since ? `${d.since}부터 누적 ${d.total}건` : '') + ` · ${d.refresh_hours||3}시간마다 자동 수집` + (bf.running ? ` · 지난 날짜 백필 중 ${bf.done}/${bf.total} (${bf.stage})` : '');
-  if(bf.running){ clearTimeout(window.__ndPoll); window.__ndPoll = setTimeout(loadNewsDaily, 15000); }
+  clearTimeout(window.__ndPoll);
+  if(bf.running && !document.hidden) window.__ndPoll = setTimeout(loadNewsDaily, 60000);  // 백필 중엔 1분마다 (탭이 숨겨져 있으면 안 함)
   if(!d.days?.length){ $('#n_daily').innerHTML = '<div class="empty">아직 쌓인 기사가 없습니다. 뉴스가 갱신되면 여기에 날짜별로 정리됩니다.</div>'; return; }
-  const curM = d.days[0].date.slice(0,7);
+  const thisM = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
+  const curM = d.months.some(m=>m.month===thisM) ? thisM : d.days[0].date.slice(0,7);  // 이번 달(기사 없으면 가장 최근 달)만 펼침
   const dayRow = x => `<div class="ndday" data-d="${x.date}" style="display:flex;align-items:center;gap:12px;padding:7px 6px;border-top:1px solid var(--line);cursor:pointer">
       <span style="min-width:150px;font-weight:600">${x.date} <span style="color:var(--muted);font-weight:400;font-size:11px">(${['일','월','화','수','목','금','토'][new Date(x.date+'T00:00:00').getDay()]})</span></span>${ndCounts(x)}<span style="flex:1"></span>${ndVerdict(x)}</div>
-      ${ndOpen[x.date]?`<div style="padding:2px 6px 8px 22px">${x.items.map(it=>`<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px"><span style="color:var(--muted);min-width:40px">${it.published.slice(11,16)}</span><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;flex:1">${esc(it.title_ko||it.title)}</a>${it.tone?`<span class="pill ${TONE_CLS[it.tone]||''}" style="font-size:10px">${esc(it.tone)}</span>`:''}<span class="pill" style="font-size:10px">${esc(it.source)}</span></div>`).join('')}</div>`:''}`;
+      ${ndOpen[x.date]?`<div style="padding:2px 6px 8px 22px">${!ndItems[x.date]?'<div class="note">불러오는 중…</div>':ndItems[x.date].map(it=>`<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px"><span style="color:var(--muted);min-width:40px">${it.published.slice(11,16)}</span><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;flex:1">${esc(it.title_ko||it.title)}</a>${it.tone?`<span class="pill ${TONE_CLS[it.tone]||''}" style="font-size:10px">${esc(it.tone)}</span>`:''}<span class="pill" style="font-size:10px">${esc(it.source)}</span></div>`).join('')}</div>`:''}`;
   let h = '';
   for(const m of d.months){
     const isCur = m.month===curM, open = isCur || ndOpen['m:'+m.month];
@@ -1010,7 +1016,7 @@ function renderNewsDaily(){
     if(open) h += d.days.filter(x=>x.date.slice(0,7)===m.month).map(dayRow).join('');
   }
   $('#n_daily').innerHTML = h;
-  $('#n_daily').querySelectorAll('.ndday').forEach(el=>el.onclick=()=>{ ndOpen[el.dataset.d] = !ndOpen[el.dataset.d]; renderNewsDaily(); });
+  $('#n_daily').querySelectorAll('.ndday').forEach(el=>el.onclick=()=>{ const day=el.dataset.d; ndOpen[day] = !ndOpen[day]; renderNewsDaily(); if(ndOpen[day] && !ndItems[day]) loadNewsDay(day); });
   $('#n_daily').querySelectorAll('.ndmon').forEach(el=>el.onclick=()=>{ if(el.dataset.m===curM) return; ndOpen['m:'+el.dataset.m] = !ndOpen['m:'+el.dataset.m]; renderNewsDaily(); });
 }
 // ---------- 미국 증시 뉴스 ----------
@@ -1023,8 +1029,8 @@ async function loadNews(refresh){
   clearTimeout(newsPoll);
   if(NEWS.refreshing){ const was = NEWS.fetched_at; let tries = 0;  // 백그라운드 갱신(번역·영향 정리 30~60초) 끝나면 새 목록으로
     const poll = async ()=>{ try{ const n = await (await fetch('/api/news')).json(); if(n.fetched_at !== was && !n.refreshing){ NEWS = n; renderNews(); loadNewsDaily(); return; } }catch(_){}
-      if(++tries < 30) newsPoll = setTimeout(poll, 5000); };
-    newsPoll = setTimeout(poll, 5000); }
+      if(++tries < 60) newsPoll = setTimeout(poll, 10000); else { NEWS.refreshing = false; renderNews(); } };  // 최대 10분(LLM 묶음 여러 개면 2~3분 걸림)
+    newsPoll = setTimeout(poll, 10000); }
 }
 function renderNews(){
   const n = NEWS; if(!n) return;

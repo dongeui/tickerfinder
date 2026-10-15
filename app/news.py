@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 CACHE = DATA_DIR / "news.json"
 LOG = DATA_DIR / "news_log.json"  # 한 번 표시된 기사 누적(링크별): 일별·월별 요약의 원천
 KO_CACHE = DATA_DIR / "news_cache.json"
+KO_CACHE_MAX, KO_CACHE_KEEP = 12000, 9000  # 월별 백필(수천 건)이 최근 36시간 창을 밀어내지 않을 만큼 넉넉히
 TTL = timedelta(minutes=20)
 MAX_AGE = timedelta(hours=36)
 LIMIT = 20
@@ -80,7 +81,9 @@ FEEDS = [
     ("Google News", _gnews_url(GN_EN, "en"), "en"),
     ("Google 뉴스", _gnews_url(GN_KO, "ko"), "ko"),
 ]
-_lock = threading.Lock()
+_lock = threading.Lock()        # refresh() 직렬화
+_FILE_LOCK = threading.RLock()  # news_cache.json / news_log.json 읽기-수정-쓰기 (refresh·백필 스레드가 동시에 건드림)
+BF_LOCK = threading.Lock()      # 백필(일별·월별)은 한 번에 하나
 
 
 def _fetch_feed(name: str, url: str, lang: str) -> list[dict]:
@@ -94,15 +97,14 @@ def _fetch_feed(name: str, url: str, lang: str) -> list[dict]:
     for it in root.iter("item"):
         title = (it.findtext("title") or "").strip()
         link = (it.findtext("link") or "").strip()
-        if not title or not link:
+        if not title or not link.startswith(("http://", "https://")):
             continue
         src_el = it.find("source")
         source = (src_el.text or "").strip() if src_el is not None and src_el.text else name
-        if src_el is not None:  # Google News 는 제목 끝에 " - 매체명" 을 붙인다 (source 요소와 표기가 다를 때도 있어 짧은 꼬리는 떼어냄)
-            if title.endswith(" - " + source):
-                title = title[: -len(source) - 3].strip()
-            else:
-                title = re.sub(r"\s+-\s+[^-]{1,24}$", "", title).strip()
+        if src_el is not None:  # Google News 는 제목 끝에 " - 매체명" 을 붙인다. source 요소와 표기(대소문자·띄어쓰기·영문/국문명)가 다른 경우만 따로 처리
+            m = re.search(r"\s+-\s+([^-]{1,30})$", title)
+            if m and (_same_name(m.group(1), source) or m.group(1).strip() in KNOWN_OUTLETS):
+                title = title[: m.start()].strip()
         try:
             pub = parsedate_to_datetime(it.findtext("pubDate") or "")
             if pub.tzinfo is None:
@@ -114,6 +116,16 @@ def _fetch_feed(name: str, url: str, lang: str) -> list[dict]:
                     "published": pub.astimezone(KST).isoformat(timespec="minutes"), "_pub": pub,
                     "desc": desc[:200] if lang == "en" and not desc.startswith("http") else ""})
     return out
+
+
+KNOWN_OUTLETS = {"조선비즈", "연합뉴스", "연합인포맥스", "한국경제", "매일경제", "머니투데이", "뉴시스", "뉴스1", "이데일리", "서울경제", "파이낸셜뉴스", "아시아경제", "헤럴드경제",
+                 "전자신문", "한겨레", "경향신문", "중앙일보", "동아일보", "KBS", "MBC", "SBS", "YTN", "JTBC", "Reuters", "Bloomberg", "CNBC", "MarketWatch", "Yahoo Finance",
+                 "Barron's", "The Wall Street Journal", "WSJ", "Financial Times", "Investing.com", "Benzinga", "Seeking Alpha", "The Motley Fool", "Business Insider", "Forbes", "AP News", "BBC"}
+
+
+def _same_name(a: str, b: str) -> bool:
+    k = lambda x: re.sub(r"[^0-9a-z가-힣]", "", x.lower())
+    return bool(k(a)) and k(a) == k(b)
 
 
 def _norm(t: str) -> str:
@@ -130,8 +142,11 @@ def _shingles(t: str) -> set[str]:
 
 
 def _similar(a: set[str], b: set[str], th: float = 0.6) -> bool:
+    """같은 사건을 다룬 두 제목인가. 짧은 쪽 기준 겹침이 th 이상이되, 짧은 제목(조각 6개 미만)이 긴 제목에 흡수되지 않도록 그때는 자카드 0.5 로 본다."""
     if not a or not b:
         return False
+    if min(len(a), len(b)) < 6:
+        return len(a & b) / len(a | b) >= 0.5
     return len(a & b) / min(len(a), len(b)) >= th
 
 
@@ -214,12 +229,24 @@ def _llm_enrich_once(items: list[dict]) -> dict[int, dict]:
         "- impact: 이 기사가 어떤 종목(가능하면 티커)·업종·시장(나스닥/S&P500/국내 증시/환율/금리 등)에 어떤 방향으로 영향을 줄 수 있는지 한국어 5줄 이내로, 줄바꿈은 \\n. 제목·요약에 근거한 것만 쓰고 추측을 늘리지 마라. "
         "증시와 뚜렷한 연관이 없는 기사(일반 사회·연예·광고성·개별 상품 홍보 등)는 빈 문자열 \"\" 로 둔다.\n\n" + "\n".join(lines))
     try:
-        r = subprocess.run([exe, "-p", "--no-session-persistence", "--tools", "", "--model", LLM_MODEL, "--output-format", "text"],  # --bare 는 로그인 정보를 안 읽어 실패
-                           input=prompt, capture_output=True, text=True, timeout=LLM_TIMEOUT, cwd=os.path.expanduser("~"),
-                           env={**os.environ, "PATH": os.environ.get("PATH", "") + ":" + os.path.expanduser("~/.local/bin")})
-        out = r.stdout.strip()
-        if r.returncode != 0 or not out:
-            log.warning("news llm failed rc=%s: %s", r.returncode, (r.stderr or out)[:300])
+        # --bare 는 로그인 정보를 안 읽어 실패. 새 세션으로 띄워 타임아웃 때 자식까지 통째로 죽인다 (자식이 파이프를 쥐고 있으면 communicate 가 멈춤)
+        proc = subprocess.Popen([exe, "-p", "--no-session-persistence", "--tools", "", "--model", LLM_MODEL, "--output-format", "text"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=os.path.expanduser("~"), start_new_session=True,
+                                env={**os.environ, "PATH": os.environ.get("PATH", "") + ":" + os.path.expanduser("~/.local/bin")})
+        try:
+            out, err = proc.communicate(prompt, timeout=LLM_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.communicate()
+            log.warning("news llm timeout (%ss, %d items)", LLM_TIMEOUT, len(items))
+            return {}
+        out = (out or "").strip()
+        if proc.returncode != 0 or not out:
+            log.warning("news llm failed rc=%s: %s", proc.returncode, (err or out)[:300])
             return {}
         m = re.search(r"\[.*\]", out, re.S)
         arr = json.loads(m.group(0) if m else out)
@@ -239,18 +266,33 @@ def _llm_enrich_once(items: list[dict]) -> dict[int, dict]:
 
 def _translate(items: list[dict]) -> None:
     """캐시에 없는 기사만 모아 LLM 에 한 번 묻고, 실패분은 구글 번역으로 제목만."""
-    ko = _load_ko()
+    with _FILE_LOCK:
+        ko = _load_ko()
     todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or "skip" not in ko[it["link"]] or "tone" not in ko[it["link"]]]  # skip/tone 판정이 없는 캐시(옛 것·gtx fallback)는 다시 묻는다
-    got = _llm_enrich(todo) if todo else {}
-    changed = False
+    got = _llm_enrich(todo) if todo else {}  # LLM 은 오래 걸리므로 락 밖에서
+    new_entries: dict[str, dict] = {}
     for i, it in enumerate(todo, 1):
         g = got.get(i)
         if g and (it["lang"] == "ko" or g["title_ko"] or g.get("skip")):  # 제외 판정이면 제목이 비어도 그대로 받아들인다
-            ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "tone": g.get("tone", ""), "src": "llm"}
+            new_entries[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "tone": g.get("tone", ""), "src": "llm"}
         else:
-            t = _gtx_protected(it["title"]) if it["lang"] == "en" else ""
-            ko[it["link"]] = {"title_ko": t or "", "impact": "", "src": "gtx" if t else "none"}  # skip 키 없음 → 다음 갱신 때 LLM 에 다시 묻는다
-        changed = True
+            t = ""
+            if it["lang"] == "en":
+                try:
+                    t = _gtx_protected(it["title"]) or ""
+                except Exception as e:  # noqa: BLE001  구글 번역 한 건 실패가 묶음 전체를 날리지 않게
+                    log.warning("gtx failed: %s", e)
+            new_entries[it["link"]] = {"title_ko": t, "impact": "", "src": "gtx" if t else "none"}  # skip 키 없음 → 다음 갱신 때 LLM 에 다시 묻는다
+    if new_entries:
+        with _FILE_LOCK:  # 다른 스레드가 그 사이 쓴 항목을 잃지 않도록 다시 읽어 병합
+            ko = _load_ko()
+            ko.update(new_entries)
+            if len(ko) > KO_CACHE_MAX:  # 오래된 것부터 버림 (dict 는 삽입순)
+                ko = dict(list(ko.items())[-KO_CACHE_KEEP:])
+            try:
+                atomic_write_text(KO_CACHE, json.dumps(ko, ensure_ascii=False))
+            except OSError as e:
+                log.warning("news cache write failed: %s", e)
     for it in items:
         c = ko.get(it["link"]) or {}
         tk = c.get("title_ko") or ""
@@ -261,13 +303,6 @@ def _translate(items: list[dict]) -> None:
         it["enrich"] = c.get("src")
         it["skip"] = bool(c.get("skip"))
         it["tone"] = c.get("tone") or ""
-    if changed:
-        if len(ko) > 600:  # 오래된 것부터 버림 (dict 는 삽입순)
-            ko = dict(list(ko.items())[-400:])
-        try:
-            atomic_write_text(KO_CACHE, json.dumps(ko, ensure_ascii=False))
-        except OSError:
-            pass
 
 
 def _select(items: list[dict], pool: int = POOL, max_age: timedelta | None = MAX_AGE) -> list[dict]:
@@ -364,27 +399,50 @@ def get(force: bool = False) -> dict:
 
 
 # ---------- 누적 로그 → 일별·월별 요약 ----------
-def _load_log() -> dict:
+class LogCorrupt(RuntimeError):
+    pass
+
+
+def _load_log(strict: bool = False) -> dict:
+    """strict=True 면 파일이 있는데 못 읽을 때 LogCorrupt (덮어써서 누적분을 날리지 않도록)."""
+    if not LOG.exists():
+        return {}
     try:
         d = json.loads(LOG.read_text())
-        return d if isinstance(d, dict) else {}
-    except (OSError, json.JSONDecodeError):
+        if not isinstance(d, dict):
+            raise ValueError("not a dict")
+        return d
+    except (OSError, ValueError) as e:
+        if strict:
+            raise LogCorrupt(str(e)) from e
+        log.warning("news log unreadable: %s", e)
         return {}
 
 
 def _log_items(items: list[dict]) -> None:
-    """표시된 기사를 링크별로 누적. 판정(tone/impact)이 나중에 채워지면 갱신."""
-    d = _load_log()
-    changed = False
-    for it in items:
-        cur = d.get(it["link"])
-        rec = {"title": it["title"], "title_ko": it.get("title_ko") or "", "source": it["source"], "published": it["published"],
-               "tone": it.get("tone") or "", "impact": it.get("impact") or ""}
-        if cur != rec:
-            d[it["link"]] = rec
-            changed = True
-    if changed:
-        atomic_write_text(LOG, json.dumps(d, ensure_ascii=False))
+    """표시된 기사를 링크별로 누적. 판정(tone/impact)이 나중에 채워지면 갱신. 읽기-수정-쓰기를 락으로 묶는다."""
+    with _FILE_LOCK:
+        try:
+            d = _load_log(strict=True)
+        except LogCorrupt as e:
+            bad = LOG.with_name(f"news_log.corrupt-{datetime.now(KST).strftime('%Y%m%d%H%M%S')}.json")
+            try:
+                os.replace(LOG, bad)
+            except OSError:
+                pass
+            log.error("news log corrupt (%s) → moved to %s, starting a new log", e, bad.name)
+            d = {}
+        changed = False
+        for it in items:
+            cur = d.get(it["link"])
+            rec = {"title": it["title"], "title_ko": it.get("title_ko") or "", "source": it["source"], "published": it["published"],
+                   "tone": it.get("tone") or "", "impact": it.get("impact") or ""}
+            if cur != rec:
+                d[it["link"]] = rec
+                changed = True
+        if changed:
+            atomic_write_text(LOG, json.dumps(d, ensure_ascii=False))
+            _DAILY_CACHE["key"] = None
 
 
 def _verdict(pos: int, neg: int, n: int) -> str:
@@ -407,8 +465,33 @@ def _agg(recs: list[dict]) -> dict:
             "score": round((c["긍정"] - c["우려"]) / n, 2) if n else None}
 
 
-def daily() -> dict:
-    """일별(기사 발행일, KST) 집계와 월별 집계. 각 일자에 그날 기사 목록 포함."""
+_DAILY_CACHE: dict = {"key": None, "val": None}
+
+
+def daily(day: str | None = None) -> dict:
+    """일별(기사 발행일, KST) 집계와 월별 집계. 기사 목록은 day(YYYY-MM-DD) 를 준 날짜만 붙인다(로그가 수천 건이라 전부 보내지 않음).
+    집계는 로그 파일 수정 시각 기준으로 캐시."""
+    with _FILE_LOCK:
+        try:
+            key = LOG.stat().st_mtime_ns
+        except OSError:
+            key = 0
+        if _DAILY_CACHE["key"] == key and _DAILY_CACHE["val"] is not None:
+            base = _DAILY_CACHE["val"]
+        else:
+            base = _daily_compute()
+            _DAILY_CACHE.update(key=key, val=base)
+    out = {**base, "days": [dict(x) for x in base["days"]], "backfill": dict(BF_STATE), "refresh_hours": REFRESH_HOURS, "backfill_days": BACKFILL_DAYS}
+    if day:
+        with _FILE_LOCK:
+            d = _load_log()
+        recs = sorted([{**r, "link": l} for l, r in d.items() if (r.get("published") or "")[:10] == day], key=lambda r: r["published"], reverse=True)
+        out["items"] = [{k: r.get(k) for k in ("title", "title_ko", "source", "tone", "link", "published")} for r in recs]
+        out["day"] = day
+    return out
+
+
+def _daily_compute() -> dict:
     d = _load_log()
     by_day: dict[str, list[dict]] = {}
     for link, r in d.items():
@@ -418,13 +501,12 @@ def daily() -> dict:
     days = []
     for day in sorted(by_day, reverse=True):
         recs = sorted(by_day[day], key=lambda r: r["published"], reverse=True)
-        days.append({"date": day, **_agg(recs), "items": [{k: r.get(k) for k in ("title", "title_ko", "source", "tone", "link", "published")} for r in recs]})
+        days.append({"date": day, **_agg(recs)})
     months = []
     for m in sorted({x["date"][:7] for x in days}, reverse=True):
         recs = [r for day, rs in by_day.items() if day[:7] == m for r in rs]
         months.append({"month": m, **_agg(recs), "days": sum(1 for x in days if x["date"][:7] == m)})
-    return {"days": days, "months": months, "since": min(by_day) if by_day else None, "total": len(d), "backfill": dict(BF_STATE),
-            "refresh_hours": REFRESH_HOURS, "backfill_days": BACKFILL_DAYS}
+    return {"days": days, "months": months, "since": min(by_day) if by_day else None, "total": len(d)}
 
 
 # ---------- 백필 + 주기 실행 ----------
@@ -459,7 +541,7 @@ def backfill_day(day: str, per_day: int = BACKFILL_PER_DAY) -> int:
 
 def ensure_days(days: int = BACKFILL_DAYS, min_items: int = BACKFILL_MIN) -> dict:
     """최근 days 일 중 로그가 min_items 미만인 날짜(오늘 제외)를 백필. 동시 실행은 하나만."""
-    if BF_STATE["running"]:
+    if not BF_LOCK.acquire(blocking=False):
         return {"skipped": "already running"}
     BF_STATE.update(running=True, stage="확인", done=0, total=0)
     try:
@@ -481,6 +563,7 @@ def ensure_days(days: int = BACKFILL_DAYS, min_items: int = BACKFILL_MIN) -> dic
         return {"days": filled}
     finally:
         BF_STATE["running"] = False
+        BF_LOCK.release()
 
 
 def loop() -> None:
@@ -494,9 +577,9 @@ def loop() -> None:
             log.warning("news periodic refresh failed: %s", e)
         now = datetime.now(KST)
         if last_bf_day != now.date() and (last_bf_day is None or now.hour >= 7):
-            last_bf_day = now.date()
             try:
-                ensure_days()
+                if "skipped" not in ensure_days():  # 월별 백필 중이면 다음 회차에 다시
+                    last_bf_day = now.date()
             except Exception as e:  # noqa: BLE001
                 log.warning("news backfill failed: %s", e)
         time.sleep(max(600, REFRESH_HOURS * 3600))
@@ -534,15 +617,17 @@ def backfill_days_batch(days: list[str], per_day: int) -> dict[str, int]:
     for day in days:
         kept = [it for it in per_day_items[day] if not it.get("skip")][:per_day]
         if kept:
-            _log_items(kept)
+            try:
+                _log_items(kept)
+            except OSError as e:
+                log.warning("news log write failed %s: %s", day, e)
         out[day] = len(kept)
     return out
 
 
 def backfill_months(start: str, end: str, days_per_month: int = 8, per_day: int = 10, min_items: int = 4) -> dict:
     """start~end(YYYY-MM) 각 달에서 평일 days_per_month 일을 표본으로 뽑아 백필 (최근 달부터). 이미 min_items 이상 있는 날짜는 건너뜀."""
-    while BF_STATE["running"]:  # 일별 백필이 돌고 있으면 끝날 때까지 대기
-        time.sleep(15)
+    BF_LOCK.acquire()  # 일별 백필이 돌고 있으면 끝날 때까지 대기 (한 번에 하나만)
     BF_STATE.update(running=True, stage="월별 백필 준비", done=0, total=0)
     try:
         y0, m0 = (int(x) for x in start.split("-")); y1, m1 = (int(x) for x in end.split("-"))
@@ -569,3 +654,4 @@ def backfill_months(start: str, end: str, days_per_month: int = 8, per_day: int 
         return {"months": filled}
     finally:
         BF_STATE["running"] = False
+        BF_LOCK.release()
