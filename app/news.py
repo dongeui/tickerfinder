@@ -205,16 +205,16 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
 def _translate(items: list[dict]) -> None:
     """캐시에 없는 기사만 모아 LLM 에 한 번 묻고, 실패분은 구글 번역으로 제목만."""
     ko = _load_ko()
-    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or (ko[it["link"]].get("src") == "llm" and "skip" not in ko[it["link"]])]  # skip 판정이 없는 옛 캐시는 다시 묻는다
+    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or "skip" not in ko[it["link"]]]  # skip 판정이 없는 캐시(옛 것·gtx fallback)는 다시 묻는다
     got = _llm_enrich(todo) if todo else {}
     changed = False
     for i, it in enumerate(todo, 1):
         g = got.get(i)
-        if g and (it["lang"] == "ko" or g["title_ko"]):
+        if g and (it["lang"] == "ko" or g["title_ko"] or g.get("skip")):  # 제외 판정이면 제목이 비어도 그대로 받아들인다
             ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "src": "llm"}
         else:
             t = _gtx_protected(it["title"]) if it["lang"] == "en" else ""
-            ko[it["link"]] = {"title_ko": t or "", "impact": "", "src": "gtx" if t else "none"}
+            ko[it["link"]] = {"title_ko": t or "", "impact": "", "src": "gtx" if t else "none"}  # skip 키 없음 → 다음 갱신 때 LLM 에 다시 묻는다
         changed = True
     for it in items:
         c = ko.get(it["link"]) or {}
