@@ -170,7 +170,7 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         return {}
     lines = []
     for i, it in enumerate(items, 1):
-        lines.append(f"{i}. [{it['lang']}] ({it['source']}) {it['title']}" + (f" — {it['desc']}" if it.get("desc") else ""))
+        lines.append(f"{i}. [{it['lang']}] {it['title']}" + (f" — {it['desc']}" if it.get("desc") else "") + f" (출처: {it['source']})")
     prompt = (
         "아래는 미국 증시 관련 뉴스 제목(일부는 요약 포함)이다. 각 항목에 대해 JSON 배열만 출력하라. 다른 말은 쓰지 마라.\n"
         "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\", \"tone\": \"긍정|우려|중립|혼재\", \"skip\": false}, ...]\n"
@@ -222,7 +222,10 @@ def _translate(items: list[dict]) -> None:
         changed = True
     for it in items:
         c = ko.get(it["link"]) or {}
-        it["title_ko"] = c.get("title_ko") or None
+        tk = c.get("title_ko") or ""
+        tk = re.sub(r"^[\(\[]\s*" + re.escape(it["source"]) + r"\s*[\)\]]\s*[:：-]?\s*", "", tk, flags=re.I)  # 모델이 "(매체명) " 을 제목 앞에 붙인 경우
+        tk = re.sub(r"^\(출처:[^)]*\)\s*", "", tk)
+        it["title_ko"] = tk or None
         it["impact"] = c.get("impact") or ""
         it["enrich"] = c.get("src")
         it["skip"] = bool(c.get("skip"))
