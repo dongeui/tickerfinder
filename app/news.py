@@ -32,6 +32,7 @@ TONES = ("긍정", "우려", "중립", "혼재")  # 기사가 미국 증시에 �
 
 log = logging.getLogger(__name__)
 CACHE = DATA_DIR / "news.json"
+LOG = DATA_DIR / "news_log.json"  # 한 번 표시된 기사 누적(링크별): 일별·월별 요약의 원천
 KO_CACHE = DATA_DIR / "news_cache.json"
 TTL = timedelta(minutes=20)
 MAX_AGE = timedelta(hours=36)
@@ -303,6 +304,10 @@ def refresh() -> dict:
                 log.warning("news translate failed: %s", e)
             skipped = [it["title"] for it in picked if it.get("skip")]
             picked = [it for it in picked if not it.get("skip")][:LIMIT]
+            try:
+                _log_items(picked)
+            except Exception as e:  # noqa: BLE001
+                log.warning("news log failed: %s", e)
             res = {"fetched_at": datetime.now(KST).isoformat(timespec="seconds"), "items": picked, "skipped": skipped[:20],
                    "feeds": [n for n, _, _ in FEEDS], "n_raw": len(items)}
             try:
@@ -325,3 +330,66 @@ def get(force: bool = False) -> dict:
             threading.Thread(target=refresh, daemon=True).start()
         return {**cached, "refreshing": True}
     return refresh()
+
+
+# ---------- 누적 로그 → 일별·월별 요약 ----------
+def _load_log() -> dict:
+    try:
+        d = json.loads(LOG.read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _log_items(items: list[dict]) -> None:
+    """표시된 기사를 링크별로 누적. 판정(tone/impact)이 나중에 채워지면 갱신."""
+    d = _load_log()
+    changed = False
+    for it in items:
+        cur = d.get(it["link"])
+        rec = {"title": it["title"], "title_ko": it.get("title_ko") or "", "source": it["source"], "published": it["published"],
+               "tone": it.get("tone") or "", "impact": it.get("impact") or ""}
+        if cur != rec:
+            d[it["link"]] = rec
+            changed = True
+    if changed:
+        atomic_write_text(LOG, json.dumps(d, ensure_ascii=False))
+
+
+def _verdict(pos: int, neg: int, n: int) -> str:
+    if n == 0:
+        return "-"
+    if pos >= 2 and pos >= neg * 1.5:
+        return "상승 우위"
+    if neg >= 2 and neg >= pos * 1.5:
+        return "하락 우위"
+    return "혼조"
+
+
+def _agg(recs: list[dict]) -> dict:
+    c = {"긍정": 0, "우려": 0, "중립": 0, "혼재": 0}
+    for r in recs:
+        if r.get("tone") in c:
+            c[r["tone"]] += 1
+    n = len(recs)
+    return {"n": n, "pos": c["긍정"], "neg": c["우려"], "neu": c["중립"], "mix": c["혼재"], "verdict": _verdict(c["긍정"], c["우려"], n),
+            "score": round((c["긍정"] - c["우려"]) / n, 2) if n else None}
+
+
+def daily() -> dict:
+    """일별(기사 발행일, KST) 집계와 월별 집계. 각 일자에 그날 기사 목록 포함."""
+    d = _load_log()
+    by_day: dict[str, list[dict]] = {}
+    for link, r in d.items():
+        day = (r.get("published") or "")[:10]
+        if len(day) == 10:
+            by_day.setdefault(day, []).append({**r, "link": link})
+    days = []
+    for day in sorted(by_day, reverse=True):
+        recs = sorted(by_day[day], key=lambda r: r["published"], reverse=True)
+        days.append({"date": day, **_agg(recs), "items": [{k: r.get(k) for k in ("title", "title_ko", "source", "tone", "link", "published")} for r in recs]})
+    months = []
+    for m in sorted({x["date"][:7] for x in days}, reverse=True):
+        recs = [r for day, rs in by_day.items() if day[:7] == m for r in rs]
+        months.append({"month": m, **_agg(recs), "days": sum(1 for x in days if x["date"][:7] == m)})
+    return {"days": days, "months": months, "since": min(by_day) if by_day else None, "total": len(d)}

@@ -336,6 +336,12 @@ def news_clip(refresh: bool = False):
     return news.get(force=refresh)
 
 
+@app.get("/api/news/daily")
+def news_daily():
+    """표시됐던 기사 누적(data/news_log.json)을 발행일 기준 일별·월별로 집계: 기사 수, 긍정/우려/중립/혼재, 상승·하락 우위 판정."""
+    return news.daily()
+
+
 @app.get("/api/profile/{ticker}")
 def profile_info(ticker: str, force: bool = False):
     """종목 개요(섹터·산업·사업 요약)와 재무 지표 (yfinance, 7일 캐시). 실패 시 오래된 캐시(stale) 또는 404."""

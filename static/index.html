@@ -237,13 +237,10 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
     <div class="chart"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">미국 증시 주요 뉴스 <span id="n_meta" style="font-weight:400;color:var(--muted);font-size:12px"></span><button class="ghost" id="n_reload" style="padding:2px 8px;font-size:11px">새로고침</button></h3>
       <div class="note" style="margin:0 0 6px">CNBC·MarketWatch·Google News(영문/국문) RSS 에서 최근 36시간 기사를 모아 중복을 빼고 매체를 섞어 20개. 영문 제목 번역과 "영향" 메모(어떤 종목·시장에 어떤 방향인지, 5줄 이내)는 로컬 Claude(haiku)가 정리하며 고유명사는 영문 그대로 둡니다. 무관한 기사는 메모 없음. 맨 오른쪽은 미국 증시에 주는 함의(긍정·우려·중립·혼재). 증권사·운용사 상품 출시·순자산 돌파 같은 홍보성 기사는 제외. 아래 회색이 원문. 20분마다 갱신.</div>
       <div id="n_list"></div></div>
-    <div class="note">매 스캔마다 날짜별 스냅샷이 쌓입니다(6월부터는 로컬 캐시로 백필). 시그널은 매수/매도 탭의 현재 임계값으로 다시 계산됩니다.</div>
-    <div class="chart"><h3>나스닥 / 코스피 RSI(14) 추이 (음영=나스닥 매수 환경 구간)</h3><div id="chIdx"></div></div>
-    <div class="chart"><h3>날짜별 시그널 종목 수</h3><div id="chCnt"></div></div>
-
+    <div class="chart"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">뉴스 일별·월별 요약 <span id="nd_meta" style="font-weight:400;color:var(--muted);font-size:12px"></span></h3>
+      <div class="note" style="margin:0 0 6px">위에 표시됐던 기사를 발행일 기준으로 쌓아 하루 단위로 기사 수와 긍정/우려 수를 세고, 긍정이 우려의 1.5배 이상이면 "상승 우위", 반대면 "하락 우위", 아니면 "혼조". 이번 달은 날짜별로, 지난 달들은 월 한 줄로 접힘(누르면 펼침). 날짜를 누르면 그날 제목 목록.</div>
+      <div id="n_daily"></div></div>
     <div class="chart" id="r_detail" style="display:none;margin-top:12px"><h3 class="dtitle"></h3><div class="dchart"></div></div>
-    <h3 style="font-size:13px;color:var(--muted);font-weight:500;margin:16px 0 6px">날짜별 요약</h3>
-    <div id="r_table"></div>
   </section>
 </main>
 
@@ -983,21 +980,34 @@ let _renderQueued=false; function scheduleRender(){ if(_renderQueued) return; _r
 function renderWithStreaks(){ clearTimeout(streakTimer); streakTimer=setTimeout(async()=>{ await loadStreaks(); render(); }, 400); }
 
 // ---------- 리포트 ----------
-let RH = null;
-function thQuery(extra){ return new URLSearchParams({stoch_max:$('#b_st_max').value, stoch_tf_kr:$('#b_st_tf_kr').value, stoch_tf_us:$('#b_st_tf_us').value, band_tol:$('#b_ma_tol').value, mkt_lo:$('#b_mkt_lo').value, mkt_hi:$('#b_mkt_hi').value,
-    rsi_d_min:$('#s_rd_min').value, rsi_w_lo:$('#s_rw_lo').value, rsi_w_hi:$('#s_rw_hi').value, ...extra}); }
-async function loadReport(){
-  loadNews();
-  RH = (await (await fetch('/api/history?'+thQuery({limit:'400'}))).json()).days;
-  const ix = RH.map(d=>[d.date, d.indices.IXIC?.rsi_d]).filter(p=>p[1]!=null), ks = RH.map(d=>[d.date, d.indices.KS11?.rsi_d]).filter(p=>p[1]!=null);
-  $('#chIdx').innerHTML = RH.length ? lineChart([{name:'나스닥',color:'#4f8cff',pts:ix},{name:'코스피',color:'#f5b84f',pts:ks}], +$('#b_mkt_lo').value, +$('#b_mkt_hi').value) : '<div class="note">데이터 없음</div>';
-  $('#chCnt').innerHTML = RH.length ? barChart(RH) : '<div class="note">스캔을 며칠 쌓으면 표시됩니다.</div>';
-  let h = '<table><thead><tr><th class="l">날짜</th><th>나스닥 RSI</th><th>나스닥 %K</th><th>코스피 RSI</th><th>매수환경</th><th>매수 시그널</th><th>매도 시그널</th><th class="l">매수 종목</th><th class="l">매도 종목</th></tr></thead><tbody>';
-  for(const d of [...RH].reverse()){ const n=d.indices.IXIC||{}, k=d.indices.KS11||{};
-    h += `<tr><td class="l">${d.date}${d.backfilled?' <span class="pill">백필</span>':''}</td><td class="num">${fmtN(n.rsi_d,1)}</td><td class="num">${fmtN(n.stoch_k,1)}</td><td class="num">${fmtN(k.rsi_d,1)}</td><td><span class="pill ${d.mkt_ok?'ok':'no'}">${d.mkt_ok?'충족':'-'}</span></td><td class="num hit">${d.buy_count}</td><td class="num miss">${d.sell_count}</td>
-      <td class="l" style="white-space:normal;max-width:380px;font-size:12px">${d.buy.map(x=>`<a href="#" data-t="${x.ticker}" class="tk">${x.name}</a>`).join(', ')}</td><td class="l" style="white-space:normal;max-width:380px;font-size:12px">${d.sell.map(x=>`<a href="#" data-t="${x.ticker}" class="tk">${x.name}</a>`).join(', ')}</td></tr>`; }
-  $('#r_table').innerHTML = h + '</tbody></table>';
-  bindTickerLinks($('#r_table'));
+async function loadReport(){ loadNews(); loadNewsDaily(); }
+// ---------- 뉴스 일별·월별 요약 ----------
+let ND = null, ndOpen = {};
+async function loadNewsDaily(){
+  try{ ND = await (await fetch('/api/news/daily')).json(); }catch(e){ ND = {days:[], months:[]}; }
+  renderNewsDaily();
+}
+const VERD_CLS = {'상승 우위':'ok', '하락 우위':'no', '혼조':'warn'};
+function ndCounts(a){ return `<span style="color:var(--muted);font-size:12px">기사 <b style="color:var(--text)">${a.n}</b> · <span class="up">긍정 ${a.pos}</span> · <span class="dn">우려 ${a.neg}</span>${a.mix?` · 혼재 ${a.mix}`:''}${a.neu?` · 중립 ${a.neu}`:''}</span>`; }
+function ndVerdict(a){ return a.n ? `<span class="pill ${VERD_CLS[a.verdict]||''}" style="font-weight:600">${a.verdict}</span>` : ''; }
+function renderNewsDaily(){
+  const d = ND; if(!d) return;
+  $('#nd_meta').textContent = d.since ? `${d.since}부터 누적 ${d.total}건` : '';
+  if(!d.days?.length){ $('#n_daily').innerHTML = '<div class="empty">아직 쌓인 기사가 없습니다. 뉴스가 갱신되면 여기에 날짜별로 정리됩니다.</div>'; return; }
+  const curM = d.days[0].date.slice(0,7);
+  const dayRow = x => `<div class="ndday" data-d="${x.date}" style="display:flex;align-items:center;gap:12px;padding:7px 6px;border-top:1px solid var(--line);cursor:pointer">
+      <span style="min-width:150px;font-weight:600">${x.date} <span style="color:var(--muted);font-weight:400;font-size:11px">(${['일','월','화','수','목','금','토'][new Date(x.date+'T00:00:00').getDay()]})</span></span>${ndCounts(x)}<span style="flex:1"></span>${ndVerdict(x)}</div>
+      ${ndOpen[x.date]?`<div style="padding:2px 6px 8px 22px">${x.items.map(it=>`<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px"><span style="color:var(--muted);min-width:40px">${it.published.slice(11,16)}</span><span class="pill" style="font-size:10px">${esc(it.source)}</span><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;flex:1">${esc(it.title_ko||it.title)}</a>${it.tone?`<span class="pill ${TONE_CLS[it.tone]||''}" style="font-size:10px">${esc(it.tone)}</span>`:''}</div>`).join('')}</div>`:''}`;
+  let h = '';
+  for(const m of d.months){
+    const isCur = m.month===curM, open = isCur || ndOpen['m:'+m.month];
+    h += `<div class="ndmon" data-m="${m.month}" style="display:flex;align-items:center;gap:12px;padding:9px 6px;margin-top:${h?'10px':'0'};background:#1d2230;border-radius:6px;cursor:${isCur?'default':'pointer'}">
+      <span style="min-width:150px;font-weight:700">${isCur?'':(open?'▾ ':'▸ ')}${m.month.replace('-','년 ')}월 <span style="color:var(--muted);font-weight:400;font-size:11px">${m.days}일</span></span>${ndCounts(m)}<span style="flex:1"></span>${ndVerdict(m)}</div>`;
+    if(open) h += d.days.filter(x=>x.date.slice(0,7)===m.month).map(dayRow).join('');
+  }
+  $('#n_daily').innerHTML = h;
+  $('#n_daily').querySelectorAll('.ndday').forEach(el=>el.onclick=()=>{ ndOpen[el.dataset.d] = !ndOpen[el.dataset.d]; renderNewsDaily(); });
+  $('#n_daily').querySelectorAll('.ndmon').forEach(el=>el.onclick=()=>{ if(el.dataset.m===curM) return; ndOpen['m:'+el.dataset.m] = !ndOpen['m:'+el.dataset.m]; renderNewsDaily(); });
 }
 // ---------- 미국 증시 뉴스 ----------
 let NEWS = null, newsPoll = null;
@@ -1008,7 +1018,7 @@ async function loadNews(refresh){
   renderNews();
   clearTimeout(newsPoll);
   if(NEWS.refreshing){ const was = NEWS.fetched_at; let tries = 0;  // 백그라운드 갱신(번역·영향 정리 30~60초) 끝나면 새 목록으로
-    const poll = async ()=>{ try{ const n = await (await fetch('/api/news')).json(); if(n.fetched_at !== was && !n.refreshing){ NEWS = n; renderNews(); return; } }catch(_){}
+    const poll = async ()=>{ try{ const n = await (await fetch('/api/news')).json(); if(n.fetched_at !== was && !n.refreshing){ NEWS = n; renderNews(); loadNewsDaily(); return; } }catch(_){}
       if(++tries < 30) newsPoll = setTimeout(poll, 5000); };
     newsPoll = setTimeout(poll, 5000); }
 }
@@ -1091,26 +1101,6 @@ function tickerChart(d){
   g+=`<text x="${px}" y="${H1+H2+12}">${rows[0].date}</text><text x="${W-80}" y="${H1+H2+12}">${rows[n-1].date}</text>`;
   g+=`<text x="${W-250}" y="${H1+18}" style="fill:#4f8cff">일RSI</text><text x="${W-200}" y="${H1+18}" style="fill:#f5b84f">주RSI</text><text x="${W-150}" y="${H1+18}" style="fill:#2ecc8a">스토K(${TFN[stochTf(d.region)]})</text>`;
   return g+'</svg><div class="note">위: 종가 (파란 음영=150~200일선 밴드 안, ● 초록=매수 조건 충족일, ● 빨강=매도 조건 충족일) / 아래: 일봉 RSI, 주봉 RSI, 슬로우 스토캐스틱 %K</div>';
-}
-function lineChart(series, lo, hi){
-  const W=900,Hh=180,px=36,py=14; const n=Math.max(...series.map(s=>s.pts.length)); if(!n) return '<div class="note">데이터 없음</div>';
-  const x=i=>px+(W-px-10)*(i/Math.max(1,n-1)); const y=v=>py+(Hh-py*2)*(1-v/100);
-  let g=`<svg viewBox="0 0 ${W} ${Hh}" width="100%" preserveAspectRatio="none" style="height:180px">`;
-  g+=`<rect x="${px}" y="${y(hi)}" width="${W-px-10}" height="${y(lo)-y(hi)}" fill="#2ecc8a" opacity=".12"/>`;
-  for(const v of [30,50,70]) g+=`<line x1="${px}" x2="${W-10}" y1="${y(v)}" y2="${y(v)}" stroke="#2a2f3a" stroke-dasharray="3 3"/><text x="4" y="${y(v)+3}">${v}</text>`;
-  for(const s of series){ if(!s.pts.length) continue; g+=`<polyline fill="none" stroke="${s.color}" stroke-width="1.5" points="${s.pts.map((p,i)=>x(i)+','+y(p[1])).join(' ')}"/>`; const l=s.pts[s.pts.length-1]; g+=`<text x="${x(s.pts.length-1)-70}" y="${y(l[1])-5}" style="fill:${s.color}">${s.name} ${l[1]}</text>`; }
-  const f=series[0].pts; if(f.length){ g+=`<text x="${px}" y="${Hh-1}">${f[0][0]}</text><text x="${W-80}" y="${Hh-1}">${f[f.length-1][0]}</text>`; }
-  return g+'</svg>';
-}
-function barChart(H){
-  const W=900,Hh=140,px=36,py=8; const mx=Math.max(1,...H.map(d=>Math.max(d.buy_count,d.sell_count))); const bw=(W-px-10)/H.length;
-  let g=`<svg viewBox="0 0 ${W} ${Hh}" width="100%" preserveAspectRatio="none" style="height:140px"><text x="4" y="12">${mx}</text>`;
-  H.forEach((d,i)=>{ const hb=(Hh-py*2)*d.buy_count/mx, hs=(Hh-py*2)*d.sell_count/mx;
-    g+=`<rect x="${px+i*bw}" y="${Hh-py-hb}" width="${bw*0.42}" height="${hb}" fill="#2ecc8a"><title>${d.date} 매수 ${d.buy_count}</title></rect>`;
-    g+=`<rect x="${px+i*bw+bw*0.46}" y="${Hh-py-hs}" width="${bw*0.42}" height="${hs}" fill="#ff5c7a"><title>${d.date} 매도 ${d.sell_count}</title></rect>`;
-    if(d.mkt_ok) g+=`<rect x="${px+i*bw}" y="${Hh-py+2}" width="${bw*0.9}" height="3" fill="#2ecc8a"/>`; });
-  g+=`<text x="${px}" y="${Hh-py+14}" style="display:none"></text>`;
-  return g+'</svg><div class="note">초록=매수 시그널 수, 빨강=매도 시그널 수, 하단 초록 띠=나스닥 매수환경 충족일</div>';
 }
 
 // ---------- 한국투자증권 계좌 / 주문 ----------
