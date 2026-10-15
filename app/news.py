@@ -28,6 +28,7 @@ from .universe import DATA_DIR
 
 LLM_MODEL = os.environ.get("NEWS_LLM_MODEL", "claude-haiku-5-5")
 LLM_TIMEOUT = 150
+TONES = ("긍정", "우려", "중립", "혼재")  # 기사가 미국 증시에 주는 함의
 
 log = logging.getLogger(__name__)
 CACHE = DATA_DIR / "news.json"
@@ -172,8 +173,9 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         lines.append(f"{i}. [{it['lang']}] ({it['source']}) {it['title']}" + (f" — {it['desc']}" if it.get("desc") else ""))
     prompt = (
         "아래는 미국 증시 관련 뉴스 제목(일부는 요약 포함)이다. 각 항목에 대해 JSON 배열만 출력하라. 다른 말은 쓰지 마라.\n"
-        "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\", \"skip\": false}, ...]\n"
+        "형식: [{\"i\": 번호, \"title_ko\": \"...\", \"impact\": \"...\", \"tone\": \"긍정|우려|중립|혼재\", \"skip\": false}, ...]\n"
         "규칙:\n"
+        "- tone: 이 기사가 미국 주식시장(관련 종목·지수)에 주는 함의. 상승 요인이면 긍정, 하락·위험 요인이면 우려, 방향성이 없거나 정보성이면 중립, 호재·악재가 섞이면 혼재. 네 단어 중 하나만.\n"
         "- skip: 다음이면 true — 증권사·자산운용사·은행의 상품 기사(ETF/펀드/ETN/랩 출시·상장, 순자산·설정액·판매액·자금유입 돌파, 수상·캠페인·이벤트·제휴 홍보, 단신 모음), 광고성·보도자료성 기사, 특정 종목·상품 매수 추천 광고('이 ETF 가 월 $100 를…' 류), 개인 재무상담·상속·부동산·가족 사연 같은 라이프 칼럼, 증시와 무관한 기사. "
         "시장·경제·기업 실적·정책·금리·환율·지수 동향·대형주 뉴스는 false.\n"
         "- title_ko: [en] 항목은 자연스러운 한국어 뉴스 제목으로 번역. 회사명·인명·제품명·티커·기관명 같은 고유명사는 번역/음역하지 말고 영문 원문 그대로 둔다 (예: Anthropic, Rocket Lab, Morgan Stanley, Neutron). "
@@ -193,7 +195,9 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
         res = {}
         for a in arr:
             try:
-                res[int(a["i"])] = {"title_ko": str(a.get("title_ko") or "").strip(), "impact": str(a.get("impact") or "").strip(), "skip": bool(a.get("skip"))}
+                tone = str(a.get("tone") or "").strip()
+                res[int(a["i"])] = {"title_ko": str(a.get("title_ko") or "").strip(), "impact": str(a.get("impact") or "").strip(), "skip": bool(a.get("skip")),
+                                    "tone": tone if tone in TONES else ""}
             except (KeyError, TypeError, ValueError):
                 continue
         return res
@@ -205,13 +209,13 @@ def _llm_enrich(items: list[dict]) -> dict[int, dict]:
 def _translate(items: list[dict]) -> None:
     """캐시에 없는 기사만 모아 LLM 에 한 번 묻고, 실패분은 구글 번역으로 제목만."""
     ko = _load_ko()
-    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or "skip" not in ko[it["link"]]]  # skip 판정이 없는 캐시(옛 것·gtx fallback)는 다시 묻는다
+    todo = [it for it in items if not isinstance(ko.get(it["link"]), dict) or "skip" not in ko[it["link"]] or "tone" not in ko[it["link"]]]  # skip/tone 판정이 없는 캐시(옛 것·gtx fallback)는 다시 묻는다
     got = _llm_enrich(todo) if todo else {}
     changed = False
     for i, it in enumerate(todo, 1):
         g = got.get(i)
         if g and (it["lang"] == "ko" or g["title_ko"] or g.get("skip")):  # 제외 판정이면 제목이 비어도 그대로 받아들인다
-            ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "src": "llm"}
+            ko[it["link"]] = {"title_ko": g["title_ko"] if it["lang"] == "en" else "", "impact": g["impact"], "skip": g.get("skip", False), "tone": g.get("tone", ""), "src": "llm"}
         else:
             t = _gtx_protected(it["title"]) if it["lang"] == "en" else ""
             ko[it["link"]] = {"title_ko": t or "", "impact": "", "src": "gtx" if t else "none"}  # skip 키 없음 → 다음 갱신 때 LLM 에 다시 묻는다
@@ -222,6 +226,7 @@ def _translate(items: list[dict]) -> None:
         it["impact"] = c.get("impact") or ""
         it["enrich"] = c.get("src")
         it["skip"] = bool(c.get("skip"))
+        it["tone"] = c.get("tone") or ""
     if changed:
         if len(ko) > 600:  # 오래된 것부터 버림 (dict 는 삽입순)
             ko = dict(list(ko.items())[-400:])

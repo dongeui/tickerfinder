@@ -235,7 +235,7 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
   <!-- ===== 리포트 ===== -->
   <section class="panel" id="tab-report">
     <div class="chart"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">미국 증시 주요 뉴스 <span id="n_meta" style="font-weight:400;color:var(--muted);font-size:12px"></span><button class="ghost" id="n_reload" style="padding:2px 8px;font-size:11px">새로고침</button></h3>
-      <div class="note" style="margin:0 0 6px">CNBC·MarketWatch·Google News(영문/국문) RSS 에서 최근 36시간 기사를 모아 중복을 빼고 매체를 섞어 20개. 영문 제목 번역과 "영향" 메모(어떤 종목·시장에 어떤 방향인지, 5줄 이내)는 로컬 Claude(haiku)가 정리하며 고유명사는 영문 그대로 둡니다. 무관한 기사는 메모 없음. 증권사·운용사 상품 출시·순자산 돌파 같은 홍보성 기사는 제외. 아래 회색이 원문. 20분마다 갱신.</div>
+      <div class="note" style="margin:0 0 6px">CNBC·MarketWatch·Google News(영문/국문) RSS 에서 최근 36시간 기사를 모아 중복을 빼고 매체를 섞어 20개. 영문 제목 번역과 "영향" 메모(어떤 종목·시장에 어떤 방향인지, 5줄 이내)는 로컬 Claude(haiku)가 정리하며 고유명사는 영문 그대로 둡니다. 무관한 기사는 메모 없음. 맨 오른쪽은 미국 증시에 주는 함의(긍정·우려·중립·혼재). 증권사·운용사 상품 출시·순자산 돌파 같은 홍보성 기사는 제외. 아래 회색이 원문. 20분마다 갱신.</div>
       <div id="n_list"></div></div>
     <div class="note">매 스캔마다 날짜별 스냅샷이 쌓입니다(6월부터는 로컬 캐시로 백필). 시그널은 매수/매도 탭의 현재 임계값으로 다시 계산됩니다.</div>
     <div class="chart"><h3>나스닥 / 코스피 RSI(14) 추이 (음영=나스닥 매수 환경 구간)</h3><div id="chIdx"></div></div>
@@ -1001,6 +1001,7 @@ async function loadReport(){
 }
 // ---------- 미국 증시 뉴스 ----------
 let NEWS = null, newsPoll = null;
+const TONE_CLS = {'긍정':'ok', '우려':'no', '혼재':'warn', '중립':''};
 async function loadNews(refresh){
   if(refresh) $('#n_meta').textContent = '받는 중…';
   try{ NEWS = await (await fetch('/api/news'+(refresh?'?refresh=1':''))).json(); }catch(e){ NEWS = {items:[], error:String(e)}; }
@@ -1021,7 +1022,8 @@ function renderNews(){
   $('#n_list').innerHTML = '<ol style="margin:0;padding-left:0;list-style:none">' + n.items.map((it,i)=>`<li style="display:flex;gap:10px;padding:7px 4px;border-top:1px solid var(--line);align-items:baseline">
       <span style="color:var(--muted);font-size:11px;min-width:76px;font-variant-numeric:tabular-nums">${when(it.published)}</span>
       <span class="pill" style="font-size:10px;min-width:60px;text-align:center">${esc(it.source)}</span>
-      <span style="flex:1"><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;font-weight:600">${esc(it.title_ko||it.title)}</a>${it.title_ko?`<div style="color:var(--muted);font-size:11px;margin-top:2px">${esc(it.title)}</div>`:''}${it.impact?`<div style="font-size:12px;line-height:1.5;margin-top:4px;padding:4px 8px;border-left:2px solid var(--line);color:#c9cfdc;white-space:pre-line">${esc(it.impact)}</div>`:''}</span></li>`).join('') + '</ol>';
+      <span style="flex:1"><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;font-weight:600">${esc(it.title_ko||it.title)}</a>${it.title_ko?`<div style="color:var(--muted);font-size:11px;margin-top:2px">${esc(it.title)}</div>`:''}${it.impact?`<div style="font-size:12px;line-height:1.5;margin-top:4px;padding:4px 8px;border-left:2px solid var(--line);color:#c9cfdc;white-space:pre-line">${esc(it.impact)}</div>`:''}</span>
+      <span style="min-width:44px;text-align:right">${it.tone?`<span class="pill ${TONE_CLS[it.tone]||''}" style="font-size:11px;font-weight:600" title="이 기사가 미국 증시(관련 종목·지수)에 주는 함의 — Claude 판정">${esc(it.tone)}</span>`:''}</span></li>`).join('') + '</ol>';
 }
 function bindTickerLinks(root){ root.querySelectorAll('a.tk').forEach(a=>a.onclick=ev=>{ev.preventDefault(); showTicker(a.dataset.t,'r');}); }
 $('#n_reload').onclick = ()=>loadNews(true);
