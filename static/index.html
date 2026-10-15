@@ -970,6 +970,8 @@ function renderExits(mode){
   }
   return h + '</div><div class="note">' + (mode==='buy' ? '매수 조건 이탈은 보통 둘 중 하나입니다: 반등해서 스토캐스틱이 올라갔거나(등락 +, 좋은 이탈), 더 떨어져 150~200일선 밴드 아래로 빠졌거나(등락 -, 추세 훼손). 등락 부호로 구분하세요.' : '매도 조건 이탈은 과열이 식었다는 뜻입니다. 등락이 -면 꺾이기 시작한 것이고, +인데 RSI가 빠졌다면 상승 속도가 둔해진 것입니다.') + '</div>';
 }
+function thQuery(extra){ return new URLSearchParams({stoch_max:$('#b_st_max').value, stoch_tf_kr:$('#b_st_tf_kr').value, stoch_tf_us:$('#b_st_tf_us').value, band_tol:$('#b_ma_tol').value, mkt_lo:$('#b_mkt_lo').value, mkt_hi:$('#b_mkt_hi').value,
+    rsi_d_min:$('#s_rd_min').value, rsi_w_lo:$('#s_rw_lo').value, rsi_w_hi:$('#s_rw_hi').value, ...extra}); }
 async function loadStreaks(){
   const q = thQuery({});
   try{ const [b,s] = await Promise.all([fetch('/api/streaks?mode=buy&'+q).then(r=>r.json()), fetch('/api/streaks?mode=sell&'+q).then(r=>r.json())]); STREAK = {buy:b, sell:s}; }catch(e){}
