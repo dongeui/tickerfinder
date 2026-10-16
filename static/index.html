@@ -92,7 +92,7 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
   <h1>Ticker Finder</h1>
   <div class="seg" id="regionSeg" title="미국과 국내는 조건·확률·매도 규칙이 다르게 검증되어 따로 봅니다"><button data-r="US">미국</button><button data-r="KR">국내</button></div>
   <button id="btnScan" title="현재 화면 지역(미국/국내)만 확정 종가로 전체 스캔합니다">전체 스캔</button>
-  <button class="ghost" id="btnSync" title="현재 화면 지역만 다시 받아옵니다. 장중이면 지금 가격(잠정)으로 지표를 계산하고, 캐시·히스토리에는 남기지 않습니다">지금 동기화</button>
+  <button class="ghost" id="btnSync" disabled title="장중에만 누를 수 있습니다. 현재 화면 지역만 지금 가격(잠정)으로 지표를 계산하고, 캐시·히스토리에는 남기지 않습니다">지금 동기화</button>
   <div class="status">
     <span id="stStage">-</span>
     <div class="bar"><i id="stBar"></i></div>
@@ -313,7 +313,7 @@ async function pollStatus(){
     $('#stBar').style.width = s.total ? Math.min(100, 100*s.done/s.total)+'%' : '0';
     $('#stCount').textContent = s.running && s.total ? `${s.done}/${s.total}` : '';
     STATUS = s;
-    $('#btnSync').disabled = s.running;
+    updateSyncBtn();
     const sy = (DATA && DATA.synced_at && DATA.synced_at[REGION]) || null;
     const at = sy ? sy.at : (DATA ? DATA.scanned_at : null);
     const live = s.session && s.session[REGION];
@@ -325,9 +325,15 @@ async function pollStatus(){
   pollTimer = setTimeout(pollStatus, delay);
 }
 $('#btnScan').onclick = async ()=>{ await fetch(`/api/scan?region=${REGION}`,{method:'POST'}); $('#btnScan').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500); };
-$('#btnSync').onclick = async ()=>{
+function updateSyncBtn(){
   const live = !!(STATUS && STATUS.session && STATUS.session[REGION]);
-  await fetch(`/api/scan?region=${REGION}&intraday=${live}`,{method:'POST'});
+  const b = $('#btnSync'); b.disabled = !live || !!(STATUS && STATUS.running);
+  b.title = live ? '현재 화면 지역만 지금 가격(잠정)으로 지표를 계산합니다. 캐시·히스토리에는 남기지 않고 마감 후 자동 스캔에서 확정됩니다'
+    : `${REGION==='US'?'미국':'국내'} 정규장 시간에만 누를 수 있습니다 (장 마감 후에는 전체 스캔이 같은 일을 합니다)`;
+}
+$('#btnSync').onclick = async ()=>{
+  if(!(STATUS && STATUS.session && STATUS.session[REGION])) return updateSyncBtn();
+  await fetch(`/api/scan?region=${REGION}&intraday=true`,{method:'POST'});
   $('#btnSync').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500);
 };
 
@@ -403,7 +409,7 @@ function setRegion(r){
 }
 function syncRegionUI(){
   document.querySelectorAll('#regionSeg button').forEach(b=>b.classList.toggle('on', b.dataset.r===REGION));
-  $('#btnScan').textContent = `${REGION==='US'?'미국':'국내'} 전체 스캔`;
+  $('#btnScan').textContent = `${REGION==='US'?'미국':'국내'} 전체 스캔`; updateSyncBtn();
   $('#krBanner').style.display = REGION==='KR' ? '' : 'none';
   $('#wrap_tf_kr').style.display = REGION==='KR' ? '' : 'none';
   $('#wrap_tf_us').style.display = REGION==='US' ? '' : 'none';
