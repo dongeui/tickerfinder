@@ -91,7 +91,7 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
 <header>
   <h1>Ticker Finder</h1>
   <div class="seg" id="regionSeg" title="미국과 국내는 조건·확률·매도 규칙이 다르게 검증되어 따로 봅니다"><button data-r="US">미국</button><button data-r="KR">국내</button></div>
-  <button id="btnScan">전체 스캔</button>
+  <button id="btnScan" title="현재 화면 지역(미국/국내)만 확정 종가로 전체 스캔합니다">전체 스캔</button>
   <button class="ghost" id="btnSync" title="현재 화면 지역만 다시 받아옵니다. 장중이면 지금 가격(잠정)으로 지표를 계산하고, 캐시·히스토리에는 남기지 않습니다">지금 동기화</button>
   <div class="status">
     <span id="stStage">-</span>
@@ -324,7 +324,7 @@ async function pollStatus(){
   }catch(e){ delay = 5000; }
   pollTimer = setTimeout(pollStatus, delay);
 }
-$('#btnScan').onclick = async ()=>{ await fetch('/api/scan',{method:'POST'}); $('#btnScan').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500); };
+$('#btnScan').onclick = async ()=>{ await fetch(`/api/scan?region=${REGION}`,{method:'POST'}); $('#btnScan').disabled=true; clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus,500); };
 $('#btnSync').onclick = async ()=>{
   const live = !!(STATUS && STATUS.session && STATUS.session[REGION]);
   await fetch(`/api/scan?region=${REGION}&intraday=${live}`,{method:'POST'});
@@ -403,6 +403,7 @@ function setRegion(r){
 }
 function syncRegionUI(){
   document.querySelectorAll('#regionSeg button').forEach(b=>b.classList.toggle('on', b.dataset.r===REGION));
+  $('#btnScan').textContent = `${REGION==='US'?'미국':'국내'} 전체 스캔`;
   $('#krBanner').style.display = REGION==='KR' ? '' : 'none';
   $('#wrap_tf_kr').style.display = REGION==='KR' ? '' : 'none';
   $('#wrap_tf_us').style.display = REGION==='US' ? '' : 'none';
