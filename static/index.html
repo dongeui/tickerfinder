@@ -133,7 +133,7 @@ tr.grp td{background:#1d2230;font-size:12px;padding:6px 10px;border-top:1px soli
         <span id="wrap_tf_us"><label>미국</label><select id="b_st_tf_us"><option value="d">일봉</option><option value="w" selected>주봉</option></select></span></div>
       <div class="grp cond"><input type="checkbox" id="b_ma_on" checked><label>150~200일선 밴드 ±</label><input type="number" id="b_ma_tol" value="3" step="0.5">%</div>
       <div class="grp cond" title="20년 백테스트: 200일선 기울기 상위(3분위 최상위)이면서 50일선 20일 기울기가 0% 이상(횡보·상승)인 진입만. 미국 60일 승률 73%, 하위 10% -12% (전체 70% / -11~-18%)"><input type="checkbox" id="b_core_on"><label>200일선 상위 × 50일선 횡보 이상만</label></div>
-      <div class="grp cond" title="스토캐스틱·시장 환경은 충족했지만 150~200일선 밴드 아래로 허용치 넘게 벗어난 종목도 표시. 20년 백테스트(scripts/band_depth.py): 미국 밴드 아래 3~7% 60일 승률 68% 평균 +6.1% 하위10% -12.2% (밴드 안 70% / +7.1% / -11.1%), 15% 넘게 이탈 64% / +8.4% / -22.7% (1년 평균 +53%, 복권형). 밴드 안이었다가 2주 안에 이탈한 종목은 70% / +7.8% 로 밴드 안과 거의 같음. 국내는 어느 위치든 50% 안팎."><input type="checkbox" id="b_break_on" checked><label>밴드 이탈(공격형) 포함</label></div>
+      <div class="grp cond" title="스토캐스틱·시장 환경은 충족했지만 150~200일선 밴드 아래로 허용치 넘게 벗어난 종목 중 200일선 20일 기울기 1% 이상인 것만 표시(미만은 60일 승률 66%·하위10% -17%로 제외), 2.2% 이상은 「200일선 강세」 표시. 20년 백테스트(scripts/band_depth.py): 미국 밴드 아래 3~7% 60일 승률 68% 평균 +6.1% 하위10% -12.2% (밴드 안 70% / +7.1% / -11.1%), 15% 넘게 이탈 64% / +8.4% / -22.7% (1년 평균 +53%, 복권형). 밴드 안이었다가 2주 안에 이탈한 종목은 70% / +7.8% 로 밴드 안과 거의 같음. 국내는 어느 위치든 50% 안팎."><input type="checkbox" id="b_break_on" checked><label>밴드 이탈(공격형, 200일선 기울기 ≥1%) 포함</label></div>
       <div class="grp"><label>표시</label><select id="b_near"><option value="0">전부 충족</option><option value="1">1개 미충족까지</option></select></div>
     </div>
     <div class="filters" id="fCommonBuy"></div>
@@ -256,11 +256,12 @@ let STREAK = {buy:{}, sell:{}};
 let SPARK = {}, BT = null, btTimer = null, RSID = null, PM = undefined; // PM: undefined=로딩중, false=없음/실패, object=모델
 const TFN = {d:'일봉', w:'주봉', m:'월봉'};
 let DATA = null, WATCH = [], sortKey = {buy:'default', sell:'default', etf:'default'}, sortDir = {buy:-1, sell:-1, etf:-1};
+const brkRank = r => !r.brk ? 0 : (r.s.ma_slope200 ?? -99) >= BRK_SLOPE_STRONG ? 1 : 2;
 // 기본 정렬(모든 표): 신호(조건 충족 → 공격형/근접) → 추천확률(ETF 는 실측 승률) → 시총. 열 제목을 누르면 그 열로 바뀌고 "기본 정렬"로 되돌릴 수 있다.
 const descNull = (x, y) => (x==null&&y==null) ? 0 : x==null ? 1 : y==null ? -1 : (y>x?1:y<x?-1:0);
 function defaultCmp(mode){
   if(mode==='etf') return (a,b) => (etfSigRank(b)-etfSigRank(a)) || (etfStatRank(b)-etfStatRank(a)) || descNull(a.s0?.marcap ?? a.s.marcap, b.s0?.marcap ?? b.s.marcap);
-  return (a,b) => (a.miss-b.miss) || ((a.brk?1:0)-(b.brk?1:0)) || (mode==='buy' ? descNull(a.cp?.prob ?? null, b.cp?.prob ?? null) : 0) || descNull(a.s.marcap, b.s.marcap);
+  return (a,b) => (a.miss-b.miss) || (brkRank(a)-brkRank(b)) || (mode==='buy' ? descNull(a.cp?.prob ?? null, b.cp?.prob ?? null) : 0) || descNull(a.s.marcap, b.s.marcap);
 }
 const etfSigRank = r => r.buyHit?4:r.waitGate?3:(r.bc.length&&r.bmiss===1)?2:r.sellHit?1:0;
 const etfStatRank = r => ETF_UNTESTED[r.s.kind] ? 0 : (ETF_STATS[r.s.fx==='H'?'H':'open']?.win60 || 0);
@@ -525,7 +526,7 @@ function evalRows(mode){
     const cs = condFn(s).filter(c=>c.on);
     const miss = cs.filter(c=>!c.hit).length;
     // 밴드 이탈(공격형): 밴드 조건만 아래쪽으로 벗어나고(허용치 초과 하락) 나머지 조건은 충족
-    const brk = mode==='buy' && $('#b_break_on').checked && $('#b_ma_on').checked && s.band_pos!=null && s.band_pos < -(+$('#b_ma_tol').value) && cs.every(c=>c.key==='ma' || c.hit);
+    const brk = mode==='buy' && $('#b_break_on').checked && $('#b_ma_on').checked && s.band_pos!=null && s.band_pos < -(+$('#b_ma_tol').value) && (s.ma_slope200 ?? -99) >= BRK_SLOPE_MIN && cs.every(c=>c.key==='ma' || c.hit);
     if(miss > near && !brk) continue;
     const gate = mode==='buy' ? mktOK(s.region) : null;
     if(mode==='buy' && $('#b_mkt_on').checked && gate!==true) continue;
@@ -608,14 +609,16 @@ function cellClass(mode, s, key){
   return '';
 }
 // 밴드 아래 이탈(공격형) 표시. 수치는 20년 PIT 이벤트(scripts/band_depth.py, 조합 A = 스토캐 ≤25 + 게이트, 밴드 무관) 밴드 위치별 실측.
+const BRK_SLOPE_MIN = 1, BRK_SLOPE_STRONG = 2.2;  // 200일선 20일 기울기(%) — 이탈 종목 표시 하한 / 강세 표시
 const BREAK_STATS = {
-  US: {inband:'밴드 안 70% / +7.1% / 하위10% -11.1% · 180일 73% / +15.3%', d3:'60일 승률 68% 평균 +6.1% 하위10% -12.2% · 180일 69% / +12.5%', d7:'60일 승률 68% 평균 +6.6% 하위10% -13.0% · 180일 67% / +12.7%', d15:'60일 승률 64% 평균 +8.4% 하위10% -22.7% · 180일 70% / +23.9% · 360일 +53% (복권형: 깊을수록 평균은 크고 손실 꼬리도 큼)', fromBand:'밴드 안이었다가 2주 안에 이탈한 사례(2,191건) 60일 70% / +7.8% / -13.3% · 180일 71% / +16.4% — 밴드 안 진입과 거의 같음', slope:'이탈 중 200일선 상승(기울기 ≥2.2%)이면 71% / +12.9%, 평평·하락이면 66% / +6.9%'},
-  KR: {inband:'밴드 안 49% / +3.4% / 하위10% -17.7%', d3:'60일 승률 50% 평균 +3.2% 하위10% -16.4%', d7:'60일 승률 51% 평균 +2.9% 하위10% -17.6%', d15:'60일 승률 55% 평균 +6.2% 하위10% -21.7% · 180일 53% / +12.2%', fromBand:'밴드 안이었다가 이탈한 사례 53% / +5.5% — 국내는 밴드 위치가 성과를 거의 가르지 않음', slope:''},
+  US: {inband:'밴드 안 70% / +7.1% / 하위10% -11.1% · 180일 73% / +15.3%', d3:'60일 승률 68% 평균 +6.1% 하위10% -12.2% · 180일 69% / +12.5%', d7:'60일 승률 68% 평균 +6.6% 하위10% -13.0% · 180일 67% / +12.7%', d15:'60일 승률 64% 평균 +8.4% 하위10% -22.7% · 180일 70% / +23.9% · 360일 +53% (복권형: 깊을수록 평균은 크고 손실 꼬리도 큼)', fromBand:'밴드 안이었다가 2주 안에 이탈한 사례(2,191건) 60일 70% / +7.8% / -13.3% · 180일 71% / +16.4% — 밴드 안 진입과 거의 같음', slope:'이탈 중 200일선 기울기 1~2.2% 71% / +8.7% / -12.5%, ≥2.2% 71% / +12.9% / -12.8% (단 2007~2016 65% / +6.2%, 2017~ 77% / +18.6% — 최근 장세 몫이 큼), 1% 미만 66% / +6.7% / -17.1% (표시 안 함)'},
+  KR: {inband:'밴드 안 49% / +3.4% / 하위10% -17.7%', d3:'60일 승률 50% 평균 +3.2% 하위10% -16.4%', d7:'60일 승률 51% 평균 +2.9% 하위10% -17.6%', d15:'60일 승률 55% 평균 +6.2% 하위10% -21.7% · 180일 53% / +12.2%', fromBand:'밴드 안이었다가 이탈한 사례 53% / +5.5% — 국내는 밴드 위치가 성과를 거의 가르지 않음', slope:'이탈 중 200일선 기울기 1~2.2% 55% / +5.5%, ≥2.2% 56% / +8.0% (180일 46%), 1% 미만 52% / +3.7% / -19.1% (표시 안 함)'},
 };
 function breakPill(s, r){
   const st = BREAK_STATS[s.region] || BREAK_STATS.US, bp = s.band_pos, depth = bp <= -15 ? 'd15' : bp <= -7 ? 'd7' : 'd3';
   const tip = `밴드(150~200일선) 아래 ${fmtN(Math.abs(bp),1)}% 이탈 — 스토캐스틱·시장 환경은 충족, 밴드 조건만 미충족 (공격형). 20년 실측 ${depth==='d15'?'15% 초과':depth==='d7'?'7~15%':'3~7%'} 이탈: ${st[depth]} (${st.inband}).${r.fromBand?' '+st.fromBand+'.':''}${st.slope?' '+st.slope+'.':''} 약세장 해(2007·2008·2022)엔 이탈 승률 42~60%.`;
-  return `<span class="pill warn" title="${esc(tip)}">밴드 이탈 ${fmtN(bp,1)}% · 공격형</span>${r.fromBand?` <span class="pill" style="font-size:10px" title="${esc('어제까지 밴드 안(±'+$('#b_ma_tol').value+'%)이었다가 오늘 벗어남. '+st.fromBand)}">눌림목→이탈</span>`:''}`;
+  const strong = (s.ma_slope200 ?? -99) >= BRK_SLOPE_STRONG;
+  return `<span class="pill warn" title="${esc(tip)}">밴드 이탈 ${fmtN(bp,1)}% · 공격형</span>${strong?` <span class="pill ok" style="font-size:10px" title="${esc('200일선 20일 기울기 '+fmtN(s.ma_slope200,1)+'% (≥'+BRK_SLOPE_STRONG+'%): 장기 추세가 강한 이탈. '+(st.slope||''))}">200일선 강세</span>`:''}${r.fromBand?` <span class="pill" style="font-size:10px" title="${esc('어제까지 밴드 안(±'+$('#b_ma_tol').value+'%)이었다가 오늘 벗어남. '+st.fromBand)}">눌림목→이탈</span>`:''}`;
 }
 function renderTable(mode){
   const rows = evalRows(mode); const p = mode==='buy'?'b':'s'; const near = +$('#'+p+'_near').value;
@@ -625,10 +628,10 @@ function renderTable(mode){
   const val = r => key==='streak' ? (STREAK[mode][r.s.ticker]?.streak||0) : (key==='trend'||key==='slope') ? r.s.ma_slope200 : key==='slope50' ? r.s.ma_slope50 : key==='prob' ? (r.cp?.prob ?? null) : key==='exp' ? (BT?.tickers?.[r.s.ticker]?.med20 ?? null) : key==='rsi' ? r.s.rsi_d : r.s[key];
   if(key==='default') rows.sort(defaultCmp(mode));
   else rows.sort((a,b)=>{ if(a.miss!==b.miss) return a.miss-b.miss; const x=val(a), y=val(b); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x>y?1:x<y?-1:0)*dir; });
-  const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length, brkN = rows.filter(r=>r.brk).length;
-  $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목${sortLink(mode)}</span><span>신규 진입 <b>${newN}</b></span>${mode==='buy'&&$('#b_break_on').checked?`<span>밴드 이탈(공격형) <b>${brkN}</b></span>`:''}<span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
+  const total = DATA.stocks.filter(x=>x.region===REGION && inMarket(x, MARKET)).length, newN = rows.filter(r=>r.isNew).length, brkN = rows.filter(r=>r.brk).length, brkS = rows.filter(r=>brkRank(r)===1).length;
+  $('#'+p+'_sum').innerHTML = `<span>${MARKET?MKT_NAMES[MARKET]+' ':''}결과 <b>${rows.length}</b> / ${total}종목${sortLink(mode)}</span><span>신규 진입 <b>${newN}</b></span>${mode==='buy'&&$('#b_break_on').checked?`<span>밴드 이탈(공격형) <b>${brkN}</b>${brkS?` (200일선 강세 ${brkS})`:''}</span>`:''}<span>기준일 ${DATA.stocks[0]?.date||''}</span>${DATA.failed?.length?`<span>수집 실패 ${DATA.failed.length}</span>`:''}`;
   if(mode==='buy'){ const ok=mktOK('US'), okK=mktOK('KR'); const ixr=DATA.indices?.IXIC?.rsi_d, ksr=DATA.indices?.KS11?.rsi_d;
-    $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. 「밴드 이탈 · 공격형」 표시는 스토캐스틱·시장 환경은 충족했지만 밴드 아래로 벗어난 종목으로, 20년 실측에서 밴드 안보다 승률이 1~2%p 낮고 손실 꼬리가 조금 큽니다(표시 위에 마우스를 올리면 깊이별 수치). <b>추천확률(보수적)</b>은 20년 백테스트에서 그 지역·조건 조합(둘 다 / 스토캐스틱만 / 밴드만)으로 진입했을 때의 승률·반등확률 가중치를 통계적 하한으로 잡고, 200일선 기울기 3분위(상위/중위/하위)로 보정한 값입니다. 미래 데이터를 쓰지 않도록(룩어헤드 없이) 검증했고 예측치가 실제 승률을 넘지 않게 맞췄습니다. 종목 자체의 과거 진입 통계는 검증 결과 예측력이 없어 확률에 넣지 않고 "종목 과거"로만 참고 표시합니다. ' + pmNote() + ' 종목을 클릭하면 상세가 보입니다.' + (PM && !pmMatch() ? `<div style="margin-top:6px"><span class="pill no">모델 불일치</span> 화면 임계값이 확률 모델(${PM.params.span?.[0]?.slice(0,4)}~ 백테스트)을 만든 값과 달라 추천확률을 표시하지 않습니다: <b>${esc(pmDiffs().map(x=>x[1]).join(', '))}</b>. <button class="ghost" id="pm_reset" style="padding:1px 8px;font-size:11px">모델값으로 되돌리기</button> <span style="color:var(--muted)">(바꾼 값으로 확률을 보려면 터미널에서 <code>uv run python scripts/pit_prob.py --rebuild</code>)</span></div>` : '');
+    $('#b_note').innerHTML = (REGION==='US' ? `시장 환경: 나스닥 RSI <b>${fmtN(ixr,1)}</b> <span class="pill ${ok?'ok':'no'}">${ok?'매수 환경 충족':'미충족'}</span>` : `시장 환경: ${$('#b_mkt_kr').checked?'코스피':'전일 나스닥'} RSI <b>${fmtN($('#b_mkt_kr').checked?ksr:ixr,1)}</b> <span class="pill ${okK?'ok':'no'}">${okK?'매수 환경 충족':'미충족'}</span>`) + ' — 종목 조건 충족 종목입니다. 「밴드 이탈 · 공격형」 표시는 스토캐스틱·시장 환경은 충족했지만 밴드 아래로 벗어난 종목 중 200일선 기울기 1% 이상인 것만입니다(200일선이 평평·하락인 이탈은 20년 실측 승률·손실 꼬리가 나빠 숨김). 기울기 2.2% 이상은 「200일선 강세」로 따로 표시하고 먼저 정렬합니다(표시 위에 마우스를 올리면 수치). <b>추천확률(보수적)</b>은 20년 백테스트에서 그 지역·조건 조합(둘 다 / 스토캐스틱만 / 밴드만)으로 진입했을 때의 승률·반등확률 가중치를 통계적 하한으로 잡고, 200일선 기울기 3분위(상위/중위/하위)로 보정한 값입니다. 미래 데이터를 쓰지 않도록(룩어헤드 없이) 검증했고 예측치가 실제 승률을 넘지 않게 맞췄습니다. 종목 자체의 과거 진입 통계는 검증 결과 예측력이 없어 확률에 넣지 않고 "종목 과거"로만 참고 표시합니다. ' + pmNote() + ' 종목을 클릭하면 상세가 보입니다.' + (PM && !pmMatch() ? `<div style="margin-top:6px"><span class="pill no">모델 불일치</span> 화면 임계값이 확률 모델(${PM.params.span?.[0]?.slice(0,4)}~ 백테스트)을 만든 값과 달라 추천확률을 표시하지 않습니다: <b>${esc(pmDiffs().map(x=>x[1]).join(', '))}</b>. <button class="ghost" id="pm_reset" style="padding:1px 8px;font-size:11px">모델값으로 되돌리기</button> <span style="color:var(--muted)">(바꾼 값으로 확률을 보려면 터미널에서 <code>uv run python scripts/pit_prob.py --rebuild</code>)</span></div>` : '');
     const pr=$('#pm_reset'); if(pr) pr.onclick=pmReset; }
   if(!rows.length){ if(kept) disposeChart(p); XP[p]=null; const noS50 = mode==='buy' && $('#b_core_on').checked && !DATA.stocks.some(x=>x.region===REGION && x.ma_slope50!=null); const coreOn = mode==='buy' && $('#b_core_on').checked; $('#'+p+'_table').innerHTML='<div class="empty">'+(noS50?'50일선 기울기는 다음 스캔/동기화부터 계산됩니다. 상단 "지금 동기화"를 누르거나 필터를 끄세요.':coreOn?'조건 충족 종목 중 「200일선 상위 × 50일선 횡보 이상」인 종목이 오늘은 없습니다. 백테스트에서 이 조합은 전체 진입의 약 15%로 드뭅니다. 필터를 끄면 전체가 보입니다.':'조건을 만족하는 종목이 없습니다.')+'</div>' + renderExits(mode); return; }
   const cols = COLS[mode];
